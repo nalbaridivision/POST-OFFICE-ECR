@@ -330,7 +330,7 @@ export default function Dashboard() {
             <button key={item.path}
               onClick={() => router.push(item.path)}
               style={{
-                gridColumn: item.span ? `span ${item.span}` : "auto",
+                gridColumn: (item as any).span ? `span ${(item as any).span}` : "auto",
                 background: item.color, border: `1px solid ${item.border}`,
                 borderRadius: 12, padding: "16px 12px", cursor: "pointer",
                 display: "flex", flexDirection: "column", alignItems: "center", gap: 8,
