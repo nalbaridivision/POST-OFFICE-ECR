@@ -144,6 +144,7 @@ export default function DailyEntryPage() {
         regionId:       profile?.regionId     || null,
         divisionCode:   profile?.divisionCode || null,
         subDivCode:     profile?.subDivCode   || null,
+        // @ts-ignore
         hoCode:         profile?.hoCode       || null,
         submittedBy:    profile?.uid,
         submittedByName:profile?.name,
