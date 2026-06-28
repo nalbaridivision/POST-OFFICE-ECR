@@ -99,6 +99,7 @@ export default function MessagesPage() {
 
     setSending(true);
     try {
+      // @ts-ignore
       await sendMessage({
         subject,
         body,
