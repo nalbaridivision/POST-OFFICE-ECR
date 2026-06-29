@@ -1,350 +1,446 @@
 "use client";
 
-import { useState, useEffect } from "react";
 import { useAuth, ROLE_LABELS } from "../../context/AuthContext";
 import { useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
 import { db } from "../firebase";
 import { collection, getDocs, query, where } from "firebase/firestore";
+import { countUnread } from "../../utils/messageService";
 import BottomNav from "../../components/BottomNav";
 
-// ── TYPES & HELPERS FOR ECR CARD ────────────────────────────────
-interface ECRRecord {
-  officeCode: string;
-  officeName?: string;
-  month: string;
-  income: number;
-  expenditure: number;
-  ecr: number;
-  status: "good" | "average" | "poor";
-  heads?: Record<string, number>;
-}
-
-function ecrColor(ecr: number): string {
-  if (ecr >= 100) return "#16A34A";
-  if (ecr >= 80)  return "#D97706";
-  return "#DC2626";
-}
-
-function ecrBg(ecr: number): string {
-  if (ecr >= 100) return "#DCFCE7";
-  if (ecr >= 80)  return "#FEF9C3";
-  return "#FEE2E2";
-}
-
-function monthLabel(m: string): string {
-  if (!m) return "";
-  const [y, mo] = m.split("-");
-  return new Date(+y, +mo - 1).toLocaleString("default", { month: "short", year: "numeric" });
-}
-
-// ── ECR CARD COMPONENT (Integrated with User Details) ───────────
-interface OfficeECRCardProps {
-  records: ECRRecord[];
-  officeName: string;
-  officeCode: string;
-  userName: string;
-  userId: string;
-  designation: string;
-  roleLabel: string;
-}
-
-function OfficeECRCard({ records, officeName, officeCode, userName, userId, designation, roleLabel }: OfficeECRCardProps) {
-  const sorted = [...records].sort((a, b) => a.month.localeCompare(b.month));
-  const latest = sorted[sorted.length - 1];
-  const prev   = sorted[sorted.length - 2];
-  
-  if (!latest) return (
-    <div style={{ textAlign: "center", padding: "40px 20px", color: "#A0AEC0", background: "#fff", borderRadius: 12, border: "1px solid #E2E8F0" }}>
-      <div style={{ fontSize: 44, marginBottom: 12 }}>📊</div>
-      <div style={{ fontSize: 15, fontWeight: 600, color: "#718096" }}>No data yet</div>
-      <div style={{ fontSize: 13, marginTop: 6 }}>Your office ECR will appear here once submitted by your Division.</div>
-    </div>
-  );
-
-  const trend = prev ? latest.ecr - prev.ecr : 0;
-  const trendLabel = trend > 0 ? `▲ +${trend.toFixed(1)}%` : trend < 0 ? `▼ ${Math.abs(trend).toFixed(1)}%` : "→ No change";
-  const trendColor = trend > 0 ? "#16A34A" : trend < 0 ? "#DC2626" : "#718096";
-
-  const shortfall    = Math.max(0, latest.expenditure - latest.income);
-  const accsNeeded   = shortfall > 0 ? Math.ceil(shortfall / 219.23) : 0;
-  const pliNeeded    = shortfall > 0 ? Math.ceil(shortfall / 0.04)   : 0;
-  const rpliNeeded   = shortfall > 0 ? Math.ceil(shortfall / 0.12)   : 0;
-
-  return (
-    <div style={{ background: "#fff", borderRadius: 16, border: "1px solid #E2E8F0", overflow: "hidden", marginBottom: 16 }}>
-      
-      {/* INTEGRATED HEADER: Reformatted to your specifications */}
-      <div style={{ background: "linear-gradient(135deg, #1E3A8A, #1D4ED8)", padding: "16px 16px 14px", color: "#fff" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-          
-          {/* LEFT SIDE: Office and User Details */}
-          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            <div style={{ fontSize: 16, fontWeight: 700 }}>Office Name — {officeName || officeCode}</div>
-            <div style={{ fontSize: 12, opacity: 0.9 }}>Office ID — {officeCode}</div>
-            
-            <div style={{ fontSize: 14, fontWeight: 600, marginTop: 8 }}>User Name — {userName}</div>
-            <div style={{ fontSize: 12, opacity: 0.9 }}>Employee ID — {userId}</div>
-          </div>
-
-          {/* RIGHT SIDE: Status Badge & Month */}
-          <div style={{ textAlign: "right", display: "flex", flexDirection: "column", alignItems: "flex-end" }}>
-            <div style={{ fontSize: 10, fontWeight: 700, background: "rgba(255,255,255,0.2)", padding: "4px 8px", borderRadius: 12, textTransform: "uppercase", marginBottom: 6 }}>
-              {roleLabel}
-            </div>
-            <div style={{ fontSize: 11, opacity: 0.8 }}>
-              {monthLabel(latest.month)} Performance
-            </div>
-          </div>
-
-        </div>
-      </div>
-
-      <div style={{ padding: "20px 16px 16px" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 16 }}>
-          <div style={{
-            width: 90, height: 90, borderRadius: "50%",
-            background: `conic-gradient(${ecrColor(latest.ecr)} ${Math.min(latest.ecr, 100) * 3.6}deg, #F1F5F9 0deg)`,
-            display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
-          }}>
-            <div style={{ width: 70, height: 70, borderRadius: "50%", background: "#fff", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
-              <div style={{ fontSize: 20, fontWeight: 800, color: ecrColor(latest.ecr), lineHeight: 1 }}>{latest.ecr.toFixed(1)}</div>
-              <div style={{ fontSize: 10, color: "#718096" }}>ECR %</div>
-            </div>
-          </div>
-          <div style={{ flex: 1 }}>
-            <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-              <div style={{ flex: 1, background: "#F0FFF4", borderRadius: 8, padding: "8px 10px" }}>
-                <div style={{ fontSize: 10, color: "#718096" }}>Income</div>
-                <div style={{ fontSize: 13, fontWeight: 700, color: "#16A34A" }}>₹{latest.income.toLocaleString("en-IN")}</div>
-              </div>
-              <div style={{ flex: 1, background: "#FFF5F5", borderRadius: 8, padding: "8px 10px" }}>
-                <div style={{ fontSize: 10, color: "#718096" }}>Expenditure</div>
-                <div style={{ fontSize: 13, fontWeight: 700, color: "#DC2626" }}>₹{latest.expenditure.toLocaleString("en-IN")}</div>
-              </div>
-            </div>
-            <div style={{ fontSize: 13, fontWeight: 600, color: trendColor }}>{trendLabel} vs last month</div>
-          </div>
-        </div>
-
-        {/* 3-month trend */}
-        <div style={{ display: "flex", gap: 6, marginBottom: 16 }}>
-          {sorted.slice(-3).map((r) => (
-            <div key={r.month} style={{ flex: 1, background: ecrBg(r.ecr), borderRadius: 8, padding: "8px 6px", textAlign: "center" }}>
-              <div style={{ fontSize: 10, color: "#718096", marginBottom: 2 }}>{monthLabel(r.month)}</div>
-              <div style={{ fontSize: 16, fontWeight: 700, color: ecrColor(r.ecr) }}>{r.ecr.toFixed(1)}%</div>
-            </div>
-          ))}
-        </div>
-
-        {/* Shortfall Section */}
-        {shortfall > 0 && (
-          <div style={{ background: "#FFF5F5", border: "1.5px solid #FC8181", borderRadius: 10, padding: 14, marginBottom: 12 }}>
-            <div style={{ fontSize: 12, fontWeight: 700, color: "#C53030", marginBottom: 8, textTransform: "uppercase" }}>
-              ⚠️ Shortfall — ₹{shortfall.toLocaleString("en-IN")}
-            </div>
-            <div style={{ fontSize: 12, color: "#7F1D1D", marginBottom: 8 }}>To reach <strong>100% ECR</strong>, you need ANY ONE of:</div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              {[
-                { label: "📮 POSB Live A/C to open", value: `${accsNeeded.toLocaleString()} accounts` },
-                { label: "🛡️ Additional PLI Premium", value: `₹${pliNeeded.toLocaleString()}` },
-                { label: "🌾 Additional RPLI Premium", value: `₹${rpliNeeded.toLocaleString()}` },
-              ].map(item => (
-                <div key={item.label} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#FEE2E2", borderRadius: 6, padding: "8px 12px" }}>
-                  <span style={{ fontSize: 12, color: "#7F1D1D" }}>{item.label}</span>
-                  <strong style={{ fontSize: 15, color: "#B91C1C" }}>{item.value}</strong>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* POSB/PLI/RPLI current */}
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
-          {[
-            { label: "POSB Live", value: `${latest.heads?.posb_live || 0} a/c`, color: "#1D4ED8" },
-            { label: "PLI", value: `₹${((latest.heads?.pli_premium || 0)/1000).toFixed(0)}K`, color: "#0F766E" },
-            { label: "RPLI", value: `₹${((latest.heads?.rpli_premium || 0)/1000).toFixed(0)}K`, color: "#7C3AED" },
-          ].map(m => (
-            <div key={m.label} style={{ background: "#F7FAFC", borderRadius: 8, padding: "8px 10px", textAlign: "center" }}>
-              <div style={{ fontSize: 10, color: "#718096", marginBottom: 2 }}>{m.label}</div>
-              <div style={{ fontSize: 13, fontWeight: 700, color: m.color }}>{m.value}</div>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ── MAIN DASHBOARD COMPONENT ─────────────────────────────────────────
 export default function Dashboard() {
-  const { profile, user, loading } = useAuth();
+  const { profile, user, logout } = useAuth();
   const router = useRouter();
-  
-  // State for ECR Report rendering
-  const [myRecords, setMyRecords] = useState<ECRRecord[]>([]);
-  const [loadingReport, setLoadingReport] = useState(false);
+
+  const [unreadCount,  setUnreadCount]  = useState(0);
+  const [chartData,    setChartData]    = useState<any[]>([]);
+  const [loadingChart, setLoadingChart] = useState(false);
 
   useEffect(() => {
-    if (!loading && !user) router.push("/");
-  }, [loading, user]);
-
-  const isLowerOffice = ["ho_admin", "so_admin", "office_user"].includes(profile?.role || "");
-
-  useEffect(() => {
-    if (profile && isLowerOffice && (profile.officeId || profile.officeCode)) {
-      fetchMyData();
+    if (!user) { router.push("/"); return; }
+    if (profile?.uid) {
+      countUnread(profile.uid).then(setUnreadCount).catch(() => {});
+      fetchChartData();
     }
-  }, [profile, isLowerOffice]);
+  }, [user, profile]);
 
-  async function fetchMyData() {
-    setLoadingReport(true);
+  async function fetchChartData() {
+    if (!profile) return;
+    setLoadingChart(true);
     try {
-      const q = query(
-        collection(db, "ecr"), 
-        where("officeCode", "==", profile?.officeId || profile?.officeCode)
-      );
+      const now    = new Date();
+      const months: string[] = [];
+      for (let i = 2; i >= 0; i--) {
+        const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+        months.push(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`);
+      }
+
+      const col  = collection(db, "ecr");
+      const role = profile.role || "";
+      let q;
+      if      (role === "superadmin")       q = query(col);
+      else if (role === "circle_admin")     q = query(col, where("circleCode",   "==", profile.circleCode));
+      else if (role === "region_admin")     q = query(col, where("regionId",     "==", profile.regionId));
+      else if (role === "division_admin")   q = query(col, where("divisionCode", "==", profile.divisionCode));
+      else if (role === "subdivision_admin")q = query(col, where("subDivCode",   "==", profile.subDivCode));
+      else q = query(col, where("officeCode", "==", profile.officeId || profile.officeCode));
+
       const snap = await getDocs(q);
-      setMyRecords(snap.docs.map(d => d.data() as ECRRecord));
-    } catch (e) {
-      console.error("Error fetching dashboard data:", e);
-    } finally {
-      setLoadingReport(false);
-    }
+      const ecrs = snap.docs.map(d => d.data());
+
+      const data = months.map(month => {
+        const monthEcrs = ecrs.filter((r:any) => r.month === month);
+        const avg       = monthEcrs.length
+          ? monthEcrs.reduce((a:number,r:any) => a+(r.ecr||0), 0) / monthEcrs.length
+          : 0;
+        const totalInc  = monthEcrs.reduce((a:number,r:any) => a+(r.income||0), 0);
+        const totalExp  = monthEcrs.reduce((a:number,r:any) => a+(r.expenditure||0), 0);
+        const good      = monthEcrs.filter((r:any) => r.ecr>=100).length;
+        const poor      = monthEcrs.filter((r:any) => r.ecr<80).length;
+        return { month, avg, totalInc, totalExp, good, poor, count: monthEcrs.length };
+      });
+      setChartData(data);
+    } catch(e) { console.error(e); }
+    finally { setLoadingChart(false); }
   }
 
   if (!profile) return null;
 
-  const roleColor: Record<string, string> = {
-    superadmin: "#6B21A8", circle_admin: "#1D4ED8",
-    division_admin: "#0F766E", subdivision_admin: "#15803D", office_user: "#854D0E",
+  const roleColor: Record<string,string> = {
+    superadmin:        "#6B21A8",
+    circle_admin:      "#1D4ED8",
+    region_admin:      "#0369A1",
+    division_admin:    "#0F766E",
+    subdivision_admin: "#15803D",
+    ho_admin:          "#854D0E",
+    so_admin:          "#92400E",
+    office_user:       "#7F1D1D",
   };
 
-  // ── 1. RENDER DIRECT ECR CARD FOR HO, SO, BO ──
-  if (isLowerOffice) {
-    return (
-      <div style={{ paddingBottom: 80, background: "#F0F4F8", minHeight: "100vh", fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" }}>
-        <div style={{ padding: "16px 12px" }}>
-          
-          <div style={{ fontSize: 13, fontWeight: 700, color: "#A0AEC0", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 12, marginTop: 4 }}>
-            My Dashboard
-          </div>
-          
-          {loadingReport ? (
-            <div style={{ textAlign: "center", padding: "40px", color: "#A0AEC0", background: "#fff", borderRadius: 12, border: "1px solid #E2E8F0" }}>
-              Loading Report...
-            </div>
-          ) : (
-            <OfficeECRCard 
-              records={myRecords} 
-              officeName={profile?.officeName || ""} 
-              officeCode={profile?.officeId || profile?.officeCode || ""}
-              userName={profile?.name || ""}
-              userId={profile?.employeeId || ""}
-              designation={profile?.designation || ""}
-              roleLabel={ROLE_LABELS[profile?.role || ""] || profile?.role}
-            />
-          )}
-        </div>
-        <BottomNav />
-      </div>
-    );
-  }
+  const roleIcon: Record<string,string> = {
+    superadmin:        "👑",
+    circle_admin:      "🔵",
+    region_admin:      "🟣",
+    division_admin:    "🟢",
+    subdivision_admin: "🏢",
+    ho_admin:          "🏤",
+    so_admin:          "📮",
+    office_user:       "🏪",
+  };
 
-  // ── 2. RENDER MENU DASHBOARD FOR HIGHER ADMINS ──
+  const isAdminLevel = ["superadmin","circle_admin","region_admin",
+    "division_admin","subdivision_admin"].includes(profile.role);
+
+  // Chart helpers
+  const monthShort = (m: string) => {
+    if (!m) return "";
+    const [y, mo] = m.split("-");
+    return new Date(+y, +mo-1).toLocaleString("default", { month:"short", year:"2-digit" });
+  };
+
+  const ecrColor = (v: number) => v>=100?"#16A34A":v>=80?"#D97706":"#DC2626";
+  const ecrBg    = (v: number) => v>=100?"#DCFCE7":v>=80?"#FEF9C3":"#FEE2E2";
+
+  const cur  = chartData[chartData.length - 1];
+  const prev = chartData[chartData.length - 2];
+  const diff = cur && prev ? cur.avg - prev.avg : 0;
+  const maxAvg = chartData.length ? Math.max(...chartData.map(d => d.avg), 100) : 100;
+  const maxInc = chartData.length ? Math.max(...chartData.map(d => d.totalInc), 1) : 1;
+
+  // Quick actions — filter by role
+  const allActions = [
+    { icon:"👥", label:"Manage Users",   path:"/users",          color:"#EBF8FF", border:"#BEE3F8", adminOnly:true  },
+    { icon:"🏢", label:"Upload Offices", path:"/hierarchy",      color:"#F0FFF4", border:"#9AE6B4", adminOnly:true  },
+    { icon:"📊", label:"Enter Income",   path:"/data",           color:"#FAF5FF", border:"#D6BCFA", adminOnly:true  },
+    { icon:"💰", label:"Expenditure",    path:"/salary",         color:"#FFF5F5", border:"#FEB2B2", adminOnly:true  },
+    { icon:"📈", label:"ECR Reports",    path:"/reports",        color:"#EBF8FF", border:"#BEE3F8", adminOnly:false },
+    { icon:"📝", label:"Daily Entry",    path:"/daily",          color:"#F0FFF4", border:"#9AE6B4", adminOnly:false },
+    { icon:"📋", label:"Daily Report",   path:"/daily-report",   color:"#FFFBEB", border:"#FDE68A", adminOnly:true  },
+    { icon:"✉️", label:"Messages",       path:"/messages",       color:"#FAF5FF", border:"#D6BCFA", adminOnly:false },
+    { icon:"🔧", label:"Fix ECR Data",   path:"/admin/fix-ecr",  color:"#FFF5F5", border:"#FECACA", superOnly:true  },
+  ].filter(a => {
+    if (a.superOnly) return profile.role === "superadmin";
+    if (a.adminOnly) return isAdminLevel;
+    return true;
+  });
+
   return (
-    <div style={{ paddingBottom: 80, background: "#F0F4F8", minHeight: "100vh", fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" }}>
-      {/* Admin Header */}
-      <div style={{
-        background: "linear-gradient(135deg, #0D47A1, #1E88E5)",
-        padding: "20px 16px 24px", color: "#fff"
-      }}>
-        <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 4 }}>
-          {ROLE_LABELS[profile.role] || profile.role}
-        </div>
-        <h1 style={{ fontSize: 20, fontWeight: 700, margin: "0 0 2px" }}>
-          {profile.name}
-        </h1>
-        <div style={{ fontSize: 13, opacity: 0.85 }}>
-          {profile.designation || "ECR Analytics Portal"}
+    <div style={{ paddingBottom: 80, background: "#F0F4F8", minHeight: "100vh",
+      fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" }}>
+
+      {/* Header */}
+      <div style={{ background: "linear-gradient(135deg, #0D47A1, #1E88E5)",
+        padding: "20px 16px 28px", color: "#fff" }}>
+        <div style={{ display: "flex", justifyContent: "space-between",
+          alignItems: "flex-start" }}>
+          <div>
+            <div style={{ fontSize: 12, opacity: .8, marginBottom: 4,
+              textTransform: "uppercase", letterSpacing: 1 }}>
+              {ROLE_LABELS[profile.role] || profile.role}
+            </div>
+            <h1 style={{ fontSize: 22, fontWeight: 700, margin: "0 0 2px" }}>
+              {profile.name}
+            </h1>
+            <div style={{ fontSize: 13, opacity: .85 }}>
+              {profile.designation || "ECR Analytics Portal"}
+            </div>
+          </div>
+          <div style={{ fontSize: 36 }}>{roleIcon[profile.role] || "🏢"}</div>
         </div>
       </div>
 
-      <div style={{ padding: "16px 12px" }}>
-        
-        {/* Admin Role Badge */}
-        <div style={{
-          background: "#fff", borderRadius: 12, padding: "12px 16px",
-          marginBottom: 16, border: "1px solid #E2E8F0",
-          display: "flex", alignItems: "center", gap: 12
-        }}>
+      <div style={{ padding: "0 12px" }}>
+
+        {/* Role badge */}
+        <div style={{ background: "#fff", borderRadius: 12, padding: "12px 16px",
+          marginTop: -16, marginBottom: 12,
+          border: "1px solid #E2E8F0",
+          boxShadow: "0 2px 8px rgba(0,0,0,0.06)",
+          display: "flex", alignItems: "center", gap: 12 }}>
           <div style={{
             width: 44, height: 44, borderRadius: "50%",
             background: roleColor[profile.role] || "#334155",
             display: "flex", alignItems: "center",
-            justifyContent: "center", fontSize: 20
+            justifyContent: "center", fontSize: 20, color: "#fff", flexShrink: 0
           }}>
-            {profile.role === "superadmin" ? "👑" :
-             profile.role === "circle_admin" ? "🔵" :
-             profile.role === "division_admin" ? "🟢" : "🏪"}
+            {roleIcon[profile.role] || "🏢"}
           </div>
-          <div>
-            <div style={{ fontSize: 15, fontWeight: 600, color: "#1A202C" }}>
-              {ROLE_LABELS[profile.role]}
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: "#1A202C" }}>
+              {ROLE_LABELS[profile.role] || profile.role}
             </div>
             <div style={{ fontSize: 12, color: "#718096" }}>
               ID: {profile.employeeId}
-              {profile.circleCode && ` · Circle: ${profile.circleCode}`}
-              {profile.divisionCode && ` · Div: ${profile.divisionCode}`}
+              {(profile as any).circleCode   && ` · Circle: ${(profile as any).circleCode}`}
+              {(profile as any).divisionCode && ` · Div: ${(profile as any).divisionCode}`}
+              {(profile as any).subDivCode   && ` · SubDiv: ${(profile as any).subDivCode}`}
+              {(profile as any).officeId     && ` · Office: ${(profile as any).officeId}`}
             </div>
           </div>
         </div>
 
-        {/* Alert Box */}
-        <div style={{
-          background: "#FFFBEB", border: "1px solid #FCD34D",
-          borderRadius: 12, padding: "12px 16px", marginBottom: 16
-        }}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: "#92400E", marginBottom: 4 }}>
-            ⚠️ System Notice
+        {/* Unread messages notification */}
+        {unreadCount > 0 && (
+          <div onClick={() => router.push("/messages")}
+            style={{ background: "#EBF8FF", border: "1px solid #BEE3F8",
+              borderRadius: 12, padding: "12px 16px", marginBottom: 12,
+              cursor: "pointer", display: "flex",
+              justifyContent: "space-between", alignItems: "center" }}>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "#1D4ED8" }}>
+                ✉️ {unreadCount} unread message{unreadCount > 1 ? "s" : ""}
+              </div>
+              <div style={{ fontSize: 12, color: "#4A5568", marginTop: 2 }}>
+                Tap to view inbox
+              </div>
+            </div>
+            <span style={{ fontSize: 18, color: "#1D4ED8" }}>→</span>
           </div>
-          <div style={{ fontSize: 13, color: "#78350F" }}>
-            Welcome to ECR Portal. Upload office hierarchy and create users to get started.
-          </div>
-        </div>
+        )}
+
+        {/* ECR Charts — only for admin levels */}
+        {isAdminLevel && !loadingChart && chartData.length > 0 && cur && prev && (
+          <>
+            {/* Current vs Previous */}
+            <div style={{ background: "#fff", borderRadius: 12, padding: 14,
+              border: "1px solid #E2E8F0", marginBottom: 10 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: "#718096",
+                textTransform: "uppercase", letterSpacing: .5, marginBottom: 12 }}>
+                📊 Current vs Previous Month
+              </div>
+              <div style={{ display: "flex", gap: 10, marginBottom: 12 }}>
+                {/* Previous */}
+                <div style={{ flex: 1, background: "#F7FAFC", borderRadius: 10,
+                  padding: "10px 12px", textAlign: "center" as const }}>
+                  <div style={{ fontSize: 10, color: "#718096", marginBottom: 4 }}>
+                    {monthShort(prev.month)}
+                  </div>
+                  <div style={{ fontSize: 24, fontWeight: 800,
+                    color: ecrColor(prev.avg), lineHeight: 1 }}>
+                    {prev.avg.toFixed(1)}%
+                  </div>
+                  <div style={{ fontSize: 10, color: "#A0AEC0", marginTop: 2 }}>
+                    {prev.count} offices
+                  </div>
+                </div>
+                {/* Arrow */}
+                <div style={{ display: "flex", alignItems: "center",
+                  fontSize: 22, fontWeight: 800,
+                  color: diff > 0 ? "#16A34A" : diff < 0 ? "#DC2626" : "#718096" }}>
+                  {diff > 0 ? "▲" : diff < 0 ? "▼" : "→"}
+                </div>
+                {/* Current */}
+                <div style={{ flex: 1, background: ecrBg(cur.avg), borderRadius: 10,
+                  padding: "10px 12px", textAlign: "center" as const,
+                  border: `2px solid ${ecrColor(cur.avg)}30` }}>
+                  <div style={{ fontSize: 10, color: "#718096", marginBottom: 4 }}>
+                    {monthShort(cur.month)} (Current)
+                  </div>
+                  <div style={{ fontSize: 24, fontWeight: 800,
+                    color: ecrColor(cur.avg), lineHeight: 1 }}>
+                    {cur.avg.toFixed(1)}%
+                  </div>
+                  <div style={{ fontSize: 10, color: "#718096", marginTop: 2 }}>
+                    {cur.count} offices
+                  </div>
+                </div>
+              </div>
+              {/* Diff badge */}
+              <div style={{ textAlign: "center" as const, fontSize: 13, fontWeight: 700,
+                color: diff > 0 ? "#16A34A" : diff < 0 ? "#DC2626" : "#718096",
+                background: diff > 0 ? "#DCFCE7" : diff < 0 ? "#FEE2E2" : "#F1F5F9",
+                borderRadius: 20, padding: "6px 16px", display: "inline-block",
+                width: "100%", boxSizing: "border-box" as const }}>
+                {diff > 0 ? "▲" : diff < 0 ? "▼" : "→"}
+                {" "}{Math.abs(diff).toFixed(1)}%
+                {diff > 0 ? " improvement" : diff < 0 ? " decline" : " no change"}
+                {" "}vs last month
+              </div>
+            </div>
+
+            {/* 3-month ECR bar chart */}
+            <div style={{ background: "#fff", borderRadius: 12, padding: 14,
+              border: "1px solid #E2E8F0", marginBottom: 10 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: "#718096",
+                textTransform: "uppercase", letterSpacing: .5, marginBottom: 14 }}>
+                📈 Avg ECR % — 3 Month Trend
+              </div>
+              {chartData.map((d, i) => (
+                <div key={d.month} style={{ marginBottom: 10 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between",
+                    fontSize: 12, marginBottom: 4 }}>
+                    <span style={{ color: "#4A5568", fontWeight: 600 }}>
+                      {monthShort(d.month)}
+                      {i === chartData.length - 1 && (
+                        <span style={{ fontSize: 9, background: "#DBEAFE",
+                          color: "#1D4ED8", padding: "1px 6px", borderRadius: 8,
+                          marginLeft: 6, fontWeight: 700 }}>
+                          Current
+                        </span>
+                      )}
+                    </span>
+                    <span style={{ fontWeight: 800, color: ecrColor(d.avg) }}>
+                      {d.avg.toFixed(1)}%
+                    </span>
+                  </div>
+                  <div style={{ background: "#F1F5F9", borderRadius: 6,
+                    height: 14, overflow: "hidden" }}>
+                    <div style={{
+                      width: `${Math.min((d.avg / maxAvg) * 100, 100)}%`,
+                      height: "100%", background: ecrColor(d.avg), borderRadius: 6,
+                    }}/>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Good / Poor comparison */}
+            <div style={{ background: "#fff", borderRadius: 12, padding: 14,
+              border: "1px solid #E2E8F0", marginBottom: 10 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: "#718096",
+                textTransform: "uppercase", letterSpacing: .5, marginBottom: 14 }}>
+                Office Status — {monthShort(prev.month)} vs {monthShort(cur.month)}
+              </div>
+              {[
+                { label: "✅ ≥100% ECR",  prevVal: prev.good, curVal: cur.good,
+                  color: "#16A34A", bg: "#DCFCE7", better: "more" },
+                { label: "✗ Below 80%",   prevVal: prev.poor, curVal: cur.poor,
+                  color: "#DC2626", bg: "#FEE2E2", better: "less" },
+              ].map(row => {
+                const improved = row.better === "more"
+                  ? row.curVal > row.prevVal
+                  : row.curVal < row.prevVal;
+                const arrowColor = row.curVal === row.prevVal ? "#718096"
+                  : improved ? "#16A34A" : "#DC2626";
+                return (
+                  <div key={row.label} style={{ marginBottom: 12 }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: "#4A5568",
+                      marginBottom: 6 }}>
+                      {row.label}
+                    </div>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                      <div style={{ flex: 1, background: "#F7FAFC", borderRadius: 8,
+                        padding: "8px 10px", textAlign: "center" as const }}>
+                        <div style={{ fontSize: 10, color: "#718096" }}>
+                          {monthShort(prev.month)}
+                        </div>
+                        <div style={{ fontSize: 22, fontWeight: 800, color: row.color }}>
+                          {row.prevVal}
+                        </div>
+                      </div>
+                      <div style={{ fontSize: 16, color: "#CBD5E0" }}>→</div>
+                      <div style={{ flex: 1, background: row.bg, borderRadius: 8,
+                        padding: "8px 10px", textAlign: "center" as const,
+                        border: `1.5px solid ${row.color}30` }}>
+                        <div style={{ fontSize: 10, color: "#718096" }}>
+                          {monthShort(cur.month)}
+                        </div>
+                        <div style={{ fontSize: 22, fontWeight: 800, color: row.color }}>
+                          {row.curVal}
+                        </div>
+                      </div>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: arrowColor,
+                        minWidth: 60 }}>
+                        {row.curVal > row.prevVal ? "▲" : row.curVal < row.prevVal ? "▼" : "→"}
+                        {" "}{Math.abs(row.curVal - row.prevVal)} offices
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Income vs Expenditure trend */}
+            <div style={{ background: "#fff", borderRadius: 12, padding: 14,
+              border: "1px solid #E2E8F0", marginBottom: 10 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: "#718096",
+                textTransform: "uppercase", letterSpacing: .5, marginBottom: 14 }}>
+                💰 Income vs Expenditure Trend
+              </div>
+              {chartData.map(d => (
+                <div key={d.month} style={{ marginBottom: 12 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: "#4A5568",
+                    marginBottom: 6 }}>
+                    {monthShort(d.month)}
+                  </div>
+                  {/* Income bar */}
+                  <div style={{ marginBottom: 4 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between",
+                      fontSize: 11, marginBottom: 2 }}>
+                      <span style={{ color: "#16A34A", fontWeight: 600 }}>Income</span>
+                      <span style={{ fontWeight: 700, color: "#16A34A" }}>
+                        ₹{(d.totalInc / 100000).toFixed(1)}L
+                      </span>
+                    </div>
+                    <div style={{ background: "#F1F5F9", borderRadius: 4,
+                      height: 8, overflow: "hidden" }}>
+                      <div style={{
+                        width: `${Math.min((d.totalInc / maxInc) * 100, 100)}%`,
+                        height: "100%", background: "#16A34A", borderRadius: 4
+                      }}/>
+                    </div>
+                  </div>
+                  {/* Expenditure bar */}
+                  <div>
+                    <div style={{ display: "flex", justifyContent: "space-between",
+                      fontSize: 11, marginBottom: 2 }}>
+                      <span style={{ color: "#DC2626", fontWeight: 600 }}>Expenditure</span>
+                      <span style={{ fontWeight: 700, color: "#DC2626" }}>
+                        ₹{(d.totalExp / 100000).toFixed(1)}L
+                      </span>
+                    </div>
+                    <div style={{ background: "#F1F5F9", borderRadius: 4,
+                      height: 8, overflow: "hidden" }}>
+                      <div style={{
+                        width: `${Math.min((d.totalExp / maxInc) * 100, 100)}%`,
+                        height: "100%", background: "#DC2626", borderRadius: 4
+                      }}/>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
 
         {/* Quick Actions */}
-        <div style={{ fontSize: 11, fontWeight: 700, color: "#A0AEC0",
-          textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 10 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: "#718096",
+          textTransform: "uppercase", letterSpacing: .5, marginBottom: 10,
+          marginTop: 4 }}>
           Quick Actions
         </div>
-
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-          {[
-            { icon: "👥", label: "Manage Users",   path: "/users",          color: "#EBF8FF", border: "#BEE3F8" },
-            { icon: "🏢", label: "Upload Offices", path: "/hierarchy",      color: "#F0FFF4", border: "#9AE6B4" },
-            { icon: "📊", label: "Enter Data",     path: "/data",           color: "#FAF5FF", border: "#D6BCFA" },
-            { icon: "📈", label: "View Reports",   path: "/reports",        color: "#FFF5F5", border: "#FEB2B2" },
-            { icon: "🔧", label: "Fix ECR Data",   path: "/admin/fix-ecr",  color: "#FFF5F5", border: "#FECACA" },
-           ].map(item => (
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10,
+          marginBottom: 12 }}>
+          {allActions.map(item => (
             <button key={item.path}
               onClick={() => router.push(item.path)}
               style={{
-                gridColumn: (item as any).span ? `span ${(item as any).span}` : "auto",
                 background: item.color, border: `1px solid ${item.border}`,
-                borderRadius: 12, padding: "16px 12px", cursor: "pointer",
-                display: "flex", flexDirection: "column", alignItems: "center", gap: 8,
-                boxShadow: "0 2px 4px rgba(0,0,0,0.02)"
+                borderRadius: 12, padding: "14px 10px", cursor: "pointer",
+                display: "flex", flexDirection: "column", alignItems: "center",
+                gap: 6, position: "relative" as const
               }}>
-              <span style={{ fontSize: 28 }}>{item.icon}</span>
-              <span style={{ fontSize: 13, fontWeight: 600, color: "#2D3748" }}>
+              <span style={{ fontSize: 26 }}>{item.icon}</span>
+              <span style={{ fontSize: 12, fontWeight: 600, color: "#2D3748",
+                textAlign: "center" as const }}>
                 {item.label}
               </span>
+              {/* Messages unread badge */}
+              {item.path === "/messages" && unreadCount > 0 && (
+                <span style={{ position: "absolute", top: 8, right: 8,
+                  background: "#DC2626", color: "#fff", fontSize: 9,
+                  fontWeight: 700, minWidth: 16, height: 16, borderRadius: "50%",
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  border: "2px solid #fff" }}>
+                  {unreadCount > 9 ? "9+" : unreadCount}
+                </span>
+              )}
             </button>
           ))}
         </div>
 
       </div>
+
       <BottomNav />
     </div>
   );
