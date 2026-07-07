@@ -1,5 +1,5 @@
-const CACHE_NAME = "ecr-portal-v1";
-const urlsToCache = [
+const CACHE_NAME = "ecr-portal-v2";
+const STATIC_ASSETS = [
   "/",
   "/dashboard",
   "/manifest.json",
@@ -7,42 +7,54 @@ const urlsToCache = [
   "/icon-512.png",
 ];
 
-// Install
 self.addEventListener("install", (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) => {
-      return cache.addAll(urlsToCache);
-    })
+      return cache.addAll(STATIC_ASSETS);
+    }).then(() => self.skipWaiting())
   );
-  self.skipWaiting();
 });
 
-// Activate
 self.addEventListener("activate", (event) => {
   event.waitUntil(
-    caches.keys().then((cacheNames) =>
+    caches.keys().then((keys) =>
       Promise.all(
-        cacheNames
-          .filter((name) => name !== CACHE_NAME)
-          .map((name) => caches.delete(name))
+        keys
+          .filter((key) => key !== CACHE_NAME)
+          .map((key) => caches.delete(key))
       )
-    )
+    ).then(() => self.clients.claim())
   );
-  self.clients.claim();
 });
 
-// Fetch — network first, fallback to cache
 self.addEventListener("fetch", (event) => {
+  // Only handle GET requests
   if (event.request.method !== "GET") return;
+
+  // Skip chrome-extension and non-http requests
+  if (!event.request.url.startsWith("http")) return;
+
   event.respondWith(
     fetch(event.request)
       .then((response) => {
-        const clone = response.clone();
-        caches.open(CACHE_NAME).then((cache) => {
-          cache.put(event.request, clone);
-        });
+        // Cache successful responses
+        if (response && response.status === 200) {
+          const clone = response.clone();
+          caches.open(CACHE_NAME).then((cache) => {
+            cache.put(event.request, clone);
+          });
+        }
         return response;
       })
-      .catch(() => caches.match(event.request))
+      .catch(() => {
+        // Fallback to cache when offline
+        return caches.match(event.request).then((cached) => {
+          if (cached) return cached;
+          // Return offline page for navigation requests
+          if (event.request.mode === "navigate") {
+            return caches.match("/");
+          }
+        });
+      })
   );
 });
