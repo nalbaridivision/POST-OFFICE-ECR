@@ -4,10 +4,13 @@
   "short_name": "ECR Portal",
   "description": "India Post Office Performance Tracker",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
-  "background_color": "#B91C1C",
+  "display_override": ["standalone", "minimal-ui"],
+  "background_color": "#0D47A1",
   "theme_color": "#0D47A1",
-  "orientation": "portrait",
+  "orientation": "portrait-primary",
+  "prefer_related_applications": false,
   "icons": [
     {
       "src": "/icon-192.png",
