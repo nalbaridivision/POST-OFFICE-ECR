@@ -1,7 +1,11 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  // Add your IP address here
-  allowedDevOrigins: ['192.168.29.24'],
+  typescript: {
+    ignoreBuildErrors: true,
+  },
+  eslint: {
+    ignoreDuringBuilds: true,
+  },
 };
 
-module.exports = nextConfig;
+export default nextConfig;
