@@ -1,7 +1,11 @@
 "use client";
 
 import { useState } from "react";
-import { signInWithEmailAndPassword, setPersistence, browserLocalPersistence } from "firebase/auth";
+import { 
+  signInWithEmailAndPassword, 
+  setPersistence, 
+  browserLocalPersistence 
+} from "firebase/auth";
 import { doc, getDoc } from "firebase/firestore";
 import { auth, db } from "./firebase";
 import { useRouter } from "next/navigation";
