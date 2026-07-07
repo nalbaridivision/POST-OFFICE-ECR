@@ -37,7 +37,7 @@ export default function LoginPage() {
       const userDoc = snap.docs[0].data();
       const email = userDoc.email; // Use actual email stored in Firestore
 
-      await setPersistence(auth, browserSessionPersistence);
+      await setPersistence(auth, browserLocalPersistence);
       const cred = await signInWithEmailAndPassword(auth, email, password);
 
       // Verify profile exists
