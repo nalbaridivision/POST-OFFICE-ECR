@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useContext, useEffect, useState } from "react";
-import { onAuthStateChanged, signOut, setPersistence, browserSessionPersistence } from "firebase/auth";
+import { onAuthStateChanged, signOut, setPersistence, browserLocalPersistence } from "firebase/auth";
 import { doc, getDoc } from "firebase/firestore";
 import { auth, db } from "../app/firebase";
 
@@ -39,7 +39,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    setPersistence(auth, browserSessionPersistence);
+    setPersistence(auth, browserLocalPersistence);
     const unsub = onAuthStateChanged(auth, async (firebaseUser) => {
       if (firebaseUser) {
         const snap = await getDoc(doc(db, "users", firebaseUser.uid));
