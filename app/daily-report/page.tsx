@@ -5,8 +5,7 @@ import { useAuth } from "../../context/AuthContext";
 import { useRouter } from "next/navigation";
 import { db } from "../firebase";
 import {
-  collection, getDocs, query, where,
-  orderBy, Timestamp
+  collection, getDocs, query, where
 } from "firebase/firestore";
 import BottomNav from "../../components/BottomNav";
 
@@ -31,8 +30,21 @@ interface DailyRecord {
   subDivCode?: string;
 }
 
+interface OfficeRow {
+  id: string;
+  name: string;
+  type: string;
+  circleCode?: string;
+  divisionCode?: string;
+  subDivCode?: string;
+}
+
 type FilterParam = "excessCash" | "posbIndexed" | "pliPremium" | "rpliPremium" | "closingBalance";
 type FilterOp    = "above" | "below" | "between";
+type TabType     = "list" | "filter" | "notsubmitted";
+
+// Roles allowed to see "not submitted"
+const NOT_SUBMITTED_ROLES = ["superadmin", "circle_admin", "division_admin", "subdivision_admin"];
 
 export default function DailyReportPage() {
   const { profile, user } = useAuth();
@@ -54,7 +66,15 @@ export default function DailyReportPage() {
   const [filterVal1,   setFilterVal1]   = useState("");
   const [filterVal2,   setFilterVal2]   = useState("");
   const [filterResult, setFilterResult] = useState<DailyRecord[] | null>(null);
-  const [activeTab,    setActiveTab]    = useState<"list" | "filter">("list");
+  const [activeTab,    setActiveTab]    = useState<TabType>("list");
+
+  // Not submitted state
+  const [checkDate,       setCheckDate]       = useState(today);
+  const [notSubmitted,    setNotSubmitted]     = useState<OfficeRow[]>([]);
+  const [loadingNonSub,   setLoadingNonSub]   = useState(false);
+  const [nonSubChecked,   setNonSubChecked]   = useState(false);
+
+  const canSeeNotSubmitted = NOT_SUBMITTED_ROLES.includes(profile?.role || "");
 
   useEffect(() => {
     if (!user) { router.push("/"); return; }
@@ -66,9 +86,8 @@ export default function DailyReportPage() {
     try {
       const col  = collection(db, "dailyEntry");
       const role = profile?.role || "";
-      let constraints: any[] = [];
+      const constraints: any[] = [];
 
-      // Date filter
       if (viewMode === "date") {
         constraints.push(where("date", "==", fromDate));
       } else {
@@ -76,13 +95,12 @@ export default function DailyReportPage() {
         constraints.push(where("date", "<=", toDate));
       }
 
-      // Hierarchy filter
-      if      (role === "circle_admin")     constraints.push(where("circleCode",   "==", profile?.circleCode));
-      else if (role === "region_admin")     constraints.push(where("regionId",     "==", profile?.regionId));
-      else if (role === "division_admin")   constraints.push(where("divisionCode", "==", profile?.divisionCode));
-      else if (role === "subdivision_admin")constraints.push(where("subDivCode",   "==", profile?.subDivCode));
+      if      (role === "circle_admin")     constraints.push(where("circleCode",   "==", (profile as any)?.circleCode));
+      else if (role === "region_admin")     constraints.push(where("regionId",     "==", (profile as any)?.regionId));
+      else if (role === "division_admin")   constraints.push(where("divisionCode", "==", (profile as any)?.divisionCode));
+      else if (role === "subdivision_admin")constraints.push(where("subDivCode",   "==", (profile as any)?.subDivCode));
       else if (!["superadmin"].includes(role)) {
-        constraints.push(where("officeId", "==", profile?.officeId || profile?.officeCode));
+        constraints.push(where("officeId", "==", (profile as any)?.officeId || (profile as any)?.officeCode));
       }
 
       const q    = query(col, ...constraints);
@@ -91,6 +109,63 @@ export default function DailyReportPage() {
       setRecords(data.sort((a,b) => b.date.localeCompare(a.date)));
     } catch (e: any) { showToast("Error: " + e.message); }
     finally { setLoading(false); }
+  }
+
+  // ── Fetch offices that have NOT submitted for checkDate ────────
+  async function fetchNotSubmitted() {
+    setLoadingNonSub(true);
+    setNonSubChecked(false);
+    setNotSubmitted([]);
+    try {
+      const role = profile?.role || "";
+
+      // Get all offices in scope
+      const offSnap = await getDocs(collection(db, "offices"));
+      let allOffices = offSnap.docs.map(d =>
+        ({ id: d.id, ...d.data() } as OfficeRow)
+      );
+
+      // Filter by role scope
+      if      (role === "circle_admin")     allOffices = allOffices.filter((o:any) => o.circleCode   === (profile as any)?.circleCode);
+      else if (role === "region_admin")     allOffices = allOffices.filter((o:any) => o.regionId     === (profile as any)?.regionId);
+      else if (role === "division_admin")   allOffices = allOffices.filter((o:any) => o.divisionCode === (profile as any)?.divisionCode);
+      else if (role === "subdivision_admin")allOffices = allOffices.filter((o:any) => o.subDivCode   === (profile as any)?.subDivCode);
+      // superadmin sees all
+
+      // Get submitted offices for checkDate
+      const subSnap = await getDocs(
+        query(collection(db, "dailyEntry"), where("date", "==", checkDate))
+      );
+      const submittedIds = new Set(
+        subSnap.docs.map(d => d.data().officeId)
+      );
+
+      // Find offices that did NOT submit
+      const missing = allOffices.filter(o => !submittedIds.has(o.id));
+      setNotSubmitted(missing.sort((a,b) => (a.name||"").localeCompare(b.name||"")));
+      setNonSubChecked(true);
+    } catch (e: any) { showToast("Error: " + e.message); }
+    finally { setLoadingNonSub(false); }
+  }
+
+  async function exportNotSubmitted() {
+    const XLSX = await import("xlsx");
+    const rows = notSubmitted.map((o, i) => ({
+      Rank:         i + 1,
+      OfficeCode:   o.id,
+      OfficeName:   o.name,
+      Type:         o.type || "",
+      DivisionCode: (o as any).divisionCode || "",
+      SubDivCode:   (o as any).subDivCode   || "",
+      Date:         checkDate,
+      Status:       "NOT SUBMITTED",
+    }));
+    const ws = XLSX.utils.json_to_sheet(rows);
+    ws["!cols"] = Array(8).fill({ wch: 18 });
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Not Submitted");
+    XLSX.writeFile(wb, `Not_Submitted_${checkDate}.xlsx`);
+    showToast("✅ Exported!");
   }
 
   function applyFilter() {
@@ -164,11 +239,17 @@ export default function DailyReportPage() {
     closingBalance: "Closing Balance (₹)",
   };
 
-  // Summary stats
-  const totalExcess  = records.reduce((a,r) => a + (r.excessCash||0), 0);
-  const totalPOSB    = records.reduce((a,r) => a + (r.posbIndexed||0), 0);
-  const excessCount  = records.filter(r => r.cashStatus === "excess").length;
-  const lowCount     = records.filter(r => r.cashStatus === "low").length;
+  const totalExcess = records.reduce((a,r) => a + (r.excessCash||0), 0);
+  const totalPOSB   = records.reduce((a,r) => a + (r.posbIndexed||0), 0);
+  const excessCount = records.filter(r => r.cashStatus === "excess").length;
+  const lowCount    = records.filter(r => r.cashStatus === "low").length;
+
+  // Tabs to show
+  const tabs = [
+    { id: "list"         as TabType, label: "📋 Office List",   show: true },
+    { id: "filter"       as TabType, label: "🔍 Filter",        show: true },
+    { id: "notsubmitted" as TabType, label: "🚨 Not Submitted", show: canSeeNotSubmitted },
+  ].filter(t => t.show);
 
   return (
     <div style={{ paddingBottom: 80,
@@ -238,10 +319,10 @@ export default function DailyReportPage() {
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr",
             gap: 8, marginBottom: 12 }}>
             {[
-              { label: "Total Offices", val: String(records.length), color: "#1D4ED8" },
-              { label: "Excess Cash",   val: String(excessCount) + " offices", color: "#DC2626" },
-              { label: "Low Cash",      val: String(lowCount) + " offices",    color: "#D97706" },
-              { label: "Total POSB",    val: String(totalPOSB) + " a/c",       color: "#0F766E" },
+              { label: "Total Offices", val: String(records.length),        color: "#1D4ED8" },
+              { label: "Excess Cash",   val: String(excessCount)+" offices", color: "#DC2626" },
+              { label: "Low Cash",      val: String(lowCount)+" offices",    color: "#D97706" },
+              { label: "Total POSB",    val: String(totalPOSB)+" a/c",       color: "#0F766E" },
             ].map(s => (
               <div key={s.label} style={{ background: "#fff", borderRadius: 10,
                 padding: "10px 12px", border: "1px solid #E2E8F0",
@@ -261,21 +342,19 @@ export default function DailyReportPage() {
         {/* Tabs */}
         <div style={{ display: "flex", marginBottom: 12, borderRadius: 10,
           overflow: "hidden", border: "1px solid #E2E8F0", background: "#fff" }}>
-          <button onClick={() => setActiveTab("list")} style={{
-            flex: 1, padding: "10px", border: "none", cursor: "pointer",
-            fontWeight: 700, fontSize: 13,
-            background: activeTab==="list" ? "#1565C0" : "#fff",
-            color:      activeTab==="list" ? "#fff"    : "#718096",
-          }}>📋 Office List</button>
-          <button onClick={() => setActiveTab("filter")} style={{
-            flex: 1, padding: "10px", border: "none", cursor: "pointer",
-            fontWeight: 700, fontSize: 13,
-            background: activeTab==="filter" ? "#1565C0" : "#fff",
-            color:      activeTab==="filter" ? "#fff"    : "#718096",
-          }}>🔍 Filter & Search</button>
+          {tabs.map(t => (
+            <button key={t.id} onClick={() => setActiveTab(t.id)} style={{
+              flex: 1, padding: "10px 4px", border: "none", cursor: "pointer",
+              fontWeight: 700, fontSize: 12,
+              background: activeTab===t.id ? "#1565C0" : "#fff",
+              color:      activeTab===t.id ? "#fff"    : "#718096",
+            }}>
+              {t.label}
+            </button>
+          ))}
         </div>
 
-        {/* OFFICE LIST TAB */}
+        {/* ── OFFICE LIST TAB ── */}
         {activeTab === "list" && (
           <>
             {records.length > 0 && (
@@ -305,7 +384,6 @@ export default function DailyReportPage() {
                     background: "#fff", border: `1px solid ${bg}`,
                     borderRadius: 12, padding: "12px 14px", marginBottom: 10
                   }}>
-                    {/* Office header */}
                     <div style={{ display: "flex", justifyContent: "space-between",
                       alignItems: "flex-start", marginBottom: 8 }}>
                       <div>
@@ -325,37 +403,33 @@ export default function DailyReportPage() {
                       </span>
                     </div>
 
-                    {/* Data grid */}
                     <div style={{ display: "grid",
                       gridTemplateColumns: "1fr 1fr 1fr", gap: 6,
                       marginBottom: 8 }}>
                       {[
                         { label: "Closing Bal",  val: `₹${(r.closingBalance||0).toLocaleString("en-IN")}`, color: tc },
                         { label: "Excess Cash",  val: r.excessCash>0 ? `₹${r.excessCash.toLocaleString("en-IN")}` : "—", color: r.excessCash>0?"#DC2626":"#A0AEC0" },
-                        { label: "POSB Indexed", val: String(r.posbIndexed||0) + " a/c", color: "#1D4ED8" },
-                        { label: "PLI Policies", val: String(r.pliPolicies||0), color: "#0F766E" },
+                        { label: "POSB Indexed", val: String(r.posbIndexed||0)+" a/c", color: "#1D4ED8" },
+                        { label: "PLI Policies", val: String(r.pliPolicies||0),        color: "#0F766E" },
                         { label: "PLI Premium",  val: `₹${(r.pliPremium||0).toLocaleString("en-IN")}`, color: "#0F766E" },
                         { label: "RPLI Premium", val: `₹${(r.rpliPremium||0).toLocaleString("en-IN")}`, color: "#7C3AED" },
                       ].map(m => (
                         <div key={m.label} style={{ background: "#F7FAFC",
                           borderRadius: 6, padding: "6px 8px" }}>
-                          <div style={{ fontSize: 9, color: "#718096",
-                            fontWeight: 700 }}>
+                          <div style={{ fontSize: 9, color: "#718096", fontWeight: 700 }}>
                             {m.label}
                           </div>
-                          <div style={{ fontSize: 12, fontWeight: 700,
-                            color: m.color }}>
+                          <div style={{ fontSize: 12, fontWeight: 700, color: m.color }}>
                             {m.val}
                           </div>
                         </div>
                       ))}
                     </div>
 
-                    {/* Excess cash highlight */}
                     {r.excessCash > 0 && (
-                      <div style={{ background: "#FEF2F2",
-                        borderRadius: 8, padding: "8px 10px",
-                        fontSize: 12, color: "#B91C1C", fontWeight: 600 }}>
+                      <div style={{ background: "#FEF2F2", borderRadius: 8,
+                        padding: "8px 10px", fontSize: 12,
+                        color: "#B91C1C", fontWeight: 600 }}>
                         ⚠️ Excess Cash: ₹{r.excessCash.toLocaleString("en-IN")} — needs to be deposited
                       </div>
                     )}
@@ -377,13 +451,12 @@ export default function DailyReportPage() {
           </>
         )}
 
-        {/* FILTER TAB */}
+        {/* ── FILTER TAB ── */}
         {activeTab === "filter" && (
           <>
             <div style={card}>
               <div style={sHead}>Filter by Parameter</div>
 
-              {/* Parameter */}
               <label style={labelStyle}>Parameter</label>
               <div style={{ display: "flex", flexWrap: "wrap" as const,
                 gap: 6, marginBottom: 12 }}>
@@ -404,7 +477,6 @@ export default function DailyReportPage() {
                 ))}
               </div>
 
-              {/* Operator */}
               <label style={labelStyle}>Condition</label>
               <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
                 {(["above","below","between"] as FilterOp[]).map(op => (
@@ -419,7 +491,6 @@ export default function DailyReportPage() {
                 ))}
               </div>
 
-              {/* Value inputs */}
               <div style={{ display: "flex", gap: 10, marginBottom: 14 }}>
                 <div style={{ flex: 1 }}>
                   <label style={labelStyle}>
@@ -442,13 +513,11 @@ export default function DailyReportPage() {
 
               <button onClick={applyFilter} style={{ width: "100%", padding: 12,
                 background: "#1565C0", color: "#fff", border: "none",
-                borderRadius: 10, fontSize: 14, fontWeight: 700,
-                cursor: "pointer" }}>
+                borderRadius: 10, fontSize: 14, fontWeight: 700, cursor: "pointer" }}>
                 🔍 Search
               </button>
             </div>
 
-            {/* Filter results */}
             {filterResult !== null && (
               <>
                 <div style={{ display: "flex", justifyContent: "space-between",
@@ -474,11 +543,9 @@ export default function DailyReportPage() {
                     </div>
                   </div>
                 ) : (
-                  /* Results table */
                   <div style={{ background: "#fff", borderRadius: 12,
                     border: "1px solid #E2E8F0", overflow: "hidden",
                     marginBottom: 12 }}>
-                    {/* Header */}
                     <div style={{ display: "grid",
                       gridTemplateColumns: "auto 1fr auto auto",
                       padding: "10px 14px", background: "#F7FAFC",
@@ -491,14 +558,12 @@ export default function DailyReportPage() {
                       ))}
                     </div>
 
-                    {/* Rows */}
                     {filterResult.map((r, i) => {
                       const val = filterParam==="excessCash"     ? r.excessCash
                                 : filterParam==="posbIndexed"    ? r.posbIndexed
                                 : filterParam==="pliPremium"     ? r.pliPremium
                                 : filterParam==="rpliPremium"    ? r.rpliPremium
                                 : r.closingBalance;
-                      const [bg, tc] = cashStatusColor(r.cashStatus);
                       return (
                         <div key={`${r.officeId}_${r.date}_${i}`} style={{
                           display: "grid",
@@ -522,8 +587,7 @@ export default function DailyReportPage() {
                             </div>
                           </div>
                           <div style={{ fontSize: 14, fontWeight: 800,
-                            color: filterParam==="posbIndexed"
-                              ? "#1D4ED8" : "#DC2626",
+                            color: filterParam==="posbIndexed" ? "#1D4ED8" : "#DC2626",
                             marginRight: 10, textAlign: "right" as const }}>
                             {filterParam==="posbIndexed"
                               ? val
@@ -536,15 +600,12 @@ export default function DailyReportPage() {
                       );
                     })}
 
-                    {/* Footer total */}
                     <div style={{ display: "grid",
                       gridTemplateColumns: "auto 1fr auto auto",
-                      padding: "10px 14px",
-                      background: "#EBF8FF",
+                      padding: "10px 14px", background: "#EBF8FF",
                       borderTop: "2px solid #BEE3F8" }}>
                       <div />
-                      <div style={{ fontSize: 12, fontWeight: 700,
-                        color: "#1D4ED8" }}>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: "#1D4ED8" }}>
                         TOTAL ({filterResult.length})
                       </div>
                       <div style={{ fontSize: 13, fontWeight: 800,
@@ -553,9 +614,9 @@ export default function DailyReportPage() {
                         {filterParam === "posbIndexed"
                           ? filterResult.reduce((a,r)=>a+r.posbIndexed,0)
                           : `₹${filterResult.reduce((a,r)=>{
-                              const v = filterParam==="excessCash"   ? r.excessCash
-                                      : filterParam==="pliPremium"   ? r.pliPremium
-                                      : filterParam==="rpliPremium"  ? r.rpliPremium
+                              const v = filterParam==="excessCash"  ? r.excessCash
+                                      : filterParam==="pliPremium"  ? r.pliPremium
+                                      : filterParam==="rpliPremium" ? r.rpliPremium
                                       : r.closingBalance;
                               return a + (v||0);
                             }, 0).toLocaleString("en-IN")}`}
@@ -568,6 +629,145 @@ export default function DailyReportPage() {
             )}
           </>
         )}
+
+        {/* ── NOT SUBMITTED TAB ── */}
+        {activeTab === "notsubmitted" && canSeeNotSubmitted && (
+          <>
+            <div style={card}>
+              <div style={sHead}>🚨 Offices Not Submitted Daily Report</div>
+
+              <div style={{ fontSize: 12, color: "#718096", marginBottom: 12 }}>
+                Check which offices under your scope have <strong>not submitted</strong> daily data for a selected date.
+              </div>
+
+              <label style={labelStyle}>Select Date to Check</label>
+              <input type="date" style={{ ...inputStyle, marginBottom: 14 }}
+                value={checkDate} max={today}
+                onChange={e => {
+                  setCheckDate(e.target.value);
+                  setNonSubChecked(false);
+                  setNotSubmitted([]);
+                }} />
+
+              <button
+                onClick={fetchNotSubmitted}
+                disabled={loadingNonSub}
+                style={{
+                  width: "100%", padding: 12,
+                  background: loadingNonSub ? "#90CDF4" : "#DC2626",
+                  color: "#fff", border: "none", borderRadius: 10,
+                  fontSize: 14, fontWeight: 700,
+                  cursor: loadingNonSub ? "not-allowed" : "pointer"
+                }}>
+                {loadingNonSub ? "Checking…" : "🔍 Check Non-Submitted Offices"}
+              </button>
+            </div>
+
+            {/* Results */}
+            {nonSubChecked && !loadingNonSub && (
+              <>
+                {/* Summary banner */}
+                <div style={{
+                  borderRadius: 12, padding: "12px 16px", marginBottom: 12,
+                  background: notSubmitted.length === 0 ? "#F0FFF4" : "#FEF2F2",
+                  border: `1px solid ${notSubmitted.length === 0 ? "#9AE6B4" : "#FECACA"}`,
+                  display: "flex", justifyContent: "space-between",
+                  alignItems: "center"
+                }}>
+                  <div>
+                    <div style={{ fontSize: 14, fontWeight: 700,
+                      color: notSubmitted.length === 0 ? "#15803D" : "#DC2626" }}>
+                      {notSubmitted.length === 0
+                        ? "✅ All offices submitted!"
+                        : `⚠️ ${notSubmitted.length} office${notSubmitted.length>1?"s":""} NOT submitted`}
+                    </div>
+                    <div style={{ fontSize: 12, color: "#718096", marginTop: 2 }}>
+                      For date: {checkDate}
+                    </div>
+                  </div>
+                  {notSubmitted.length > 0 && (
+                    <button onClick={exportNotSubmitted} style={{
+                      padding: "8px 14px", background: "#1565C0",
+                      color: "#fff", border: "none", borderRadius: 8,
+                      fontSize: 12, fontWeight: 700, cursor: "pointer",
+                      whiteSpace: "nowrap" as const
+                    }}>
+                      📥 Export
+                    </button>
+                  )}
+                </div>
+
+                {/* Office list */}
+                {notSubmitted.length > 0 && (
+                  <div style={{ background: "#fff", borderRadius: 12,
+                    border: "1px solid #FECACA", overflow: "hidden",
+                    marginBottom: 12 }}>
+
+                    {/* Table header */}
+                    <div style={{ display: "grid",
+                      gridTemplateColumns: "auto 1fr auto",
+                      padding: "10px 14px", background: "#FEE2E2",
+                      borderBottom: "1px solid #FECACA" }}>
+                      {["#", "Office Name & ID", "Type"].map(h => (
+                        <div key={h} style={{ fontSize: 10, fontWeight: 700,
+                          color: "#B91C1C",
+                          textTransform: "uppercase" as const }}>
+                          {h}
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Table rows */}
+                    {notSubmitted.map((o, i) => (
+                      <div key={o.id} style={{
+                        display: "grid",
+                        gridTemplateColumns: "auto 1fr auto",
+                        padding: "10px 14px",
+                        borderBottom: i < notSubmitted.length-1
+                          ? "1px solid #FEE2E2" : "none",
+                        background: i%2===0 ? "#FFF5F5" : "#FEF2F2",
+                        alignItems: "center",
+                      }}>
+                        <div style={{ fontSize: 11, color: "#DC2626",
+                          fontWeight: 700, marginRight: 10 }}>
+                          {i+1}
+                        </div>
+                        <div>
+                          <div style={{ fontSize: 13, fontWeight: 600,
+                            color: "#1A202C" }}>
+                            {o.name}
+                          </div>
+                          <div style={{ fontSize: 10, color: "#A0AEC0" }}>
+                            {o.id}
+                            {(o as any).subDivCode && ` · SubDiv: ${(o as any).subDivCode}`}
+                          </div>
+                        </div>
+                        <div>
+                          <span style={{ fontSize: 10, fontWeight: 700,
+                            background: "#FEE2E2", color: "#DC2626",
+                            padding: "2px 8px", borderRadius: 10 }}>
+                            {o.type || "—"}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+
+                    {/* Footer */}
+                    <div style={{ padding: "10px 14px",
+                      background: "#FEE2E2",
+                      borderTop: "2px solid #FECACA" }}>
+                      <div style={{ fontSize: 12, fontWeight: 700,
+                        color: "#DC2626" }}>
+                        Total not submitted: {notSubmitted.length} offices
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+          </>
+        )}
+
       </div>
 
       {toast && (
