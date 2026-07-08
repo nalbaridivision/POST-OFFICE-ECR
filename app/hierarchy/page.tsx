@@ -53,6 +53,8 @@ const ROLE_LEVEL: Record<string, number> = {
 };
 
 function canDelete(myRole: string, createdByRole: string): boolean {
+  // subdivision_admin CANNOT delete any office
+  if (myRole === "subdivision_admin") return false;
   // Can delete if my level is HIGHER (lower number) than creator
   return (ROLE_LEVEL[myRole] || 0) < (ROLE_LEVEL[createdByRole] || 99);
 }
