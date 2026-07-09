@@ -119,6 +119,7 @@ export default function Dashboard() {
     { icon:"📝", label:"Daily Entry",    path:"/daily",         color:"#F0FFF4", border:"#9AE6B4", adminOnly:false, superOnly:false },
     { icon:"📋", label:"Daily Report",   path:"/daily-report",  color:"#FFFBEB", border:"#FDE68A", adminOnly:true,  superOnly:false },
     { icon:"✉️",  label:"Messages",       path:"/messages",      color:"#FAF5FF", border:"#D6BCFA", adminOnly:false, superOnly:false },
+    { icon:"🏘️", label:"Village Data", path:"/village-data",     color:"#FFFBEB", border:"#FDE68A", adminOnly:false, superOnly:false },
     // ← Chart button — only for admin levels
     { icon:"📉", label:"ECR Progress",   path:"__charts__",     color:"#ECFDF5", border:"#6EE7B7", adminOnly:true,  superOnly:false },
     { icon:"🔧", label:"Fix ECR Data",   path:"/admin/fix-ecr", color:"#FFF5F5", border:"#FECACA", adminOnly:false, superOnly:true  },
