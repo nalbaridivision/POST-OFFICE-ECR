@@ -94,6 +94,8 @@ export default function Dashboard() {
   const isAdminLevel = ["superadmin","circle_admin","region_admin",
     "division_admin","subdivision_admin"].includes(p.role);
 
+  const isEntryLevel = ["office_user","ho_admin","so_admin"].includes(p.role);
+
   const ecrColor = (v:number) => v>=100?"#16A34A":v>=80?"#D97706":"#DC2626";
   const ecrBg    = (v:number) => v>=100?"#DCFCE7":v>=80?"#FEF9C3":"#FEE2E2";
 
@@ -111,20 +113,25 @@ export default function Dashboard() {
 
   // ── Quick action tiles ─────────────────────────────────────────
   const allActions = [
-    { icon:"👥", label:"Manage Users",   path:"/users",         color:"#EBF8FF", border:"#BEE3F8", adminOnly:true,  superOnly:false },
-    { icon:"🏢", label:"Upload Offices", path:"/hierarchy",     color:"#F0FFF4", border:"#9AE6B4", adminOnly:true,  superOnly:false },
-    { icon:"📊", label:"Enter Income",   path:"/data",          color:"#FAF5FF", border:"#D6BCFA", adminOnly:true,  superOnly:false },
-    { icon:"💰", label:"Expenditure",    path:"/salary",        color:"#FFF5F5", border:"#FEB2B2", adminOnly:true,  superOnly:false },
-    { icon:"📈", label:"ECR Reports",    path:"/reports",       color:"#EBF8FF", border:"#BEE3F8", adminOnly:false, superOnly:false },
-    { icon:"📝", label:"Daily Entry",    path:"/daily",         color:"#F0FFF4", border:"#9AE6B4", adminOnly:false, superOnly:false },
-    { icon:"📋", label:"Daily Report",   path:"/daily-report",  color:"#FFFBEB", border:"#FDE68A", adminOnly:true,  superOnly:false },
-    { icon:"✉️",  label:"Messages",       path:"/messages",      color:"#FAF5FF", border:"#D6BCFA", adminOnly:false, superOnly:false },
-    { icon:"🏘️", label:"Village Data", path:"/village-data",     color:"#FFFBEB", border:"#FDE68A", adminOnly:false, superOnly:false },
+    { icon:"👥", label:"Manage Users",   path:"/users",         color:"#EBF8FF", border:"#BEE3F8", adminOnly:true,  superOnly:false, entryOnly:false },
+    { icon:"🏢", label:"Upload Offices", path:"/hierarchy",     color:"#F0FFF4", border:"#9AE6B4", adminOnly:true,  superOnly:false, entryOnly:false },
+    { icon:"📊", label:"Enter Income",   path:"/data",          color:"#FAF5FF", border:"#D6BCFA", adminOnly:true,  superOnly:false, entryOnly:false },
+    { icon:"💰", label:"Expenditure",    path:"/salary",        color:"#FFF5F5", border:"#FEB2B2", adminOnly:true,  superOnly:false, entryOnly:false },
+    { icon:"📈", label:"ECR Reports",    path:"/reports",       color:"#EBF8FF", border:"#BEE3F8", adminOnly:false, superOnly:false, entryOnly:false },
+    { icon:"📝", label:"Daily Entry",    path:"/daily",         color:"#F0FFF4", border:"#9AE6B4", adminOnly:false, superOnly:false, entryOnly:false },
+    { icon:"📋", label:"Daily Report",   path:"/daily-report",  color:"#FFFBEB", border:"#FDE68A", adminOnly:true,  superOnly:false, entryOnly:false },
+    { icon:"✉️",  label:"Messages",       path:"/messages",      color:"#FAF5FF", border:"#D6BCFA", adminOnly:false, superOnly:false, entryOnly:false },
+    { icon:"🏘️", label:"Village Data", path:"/village-data",     color:"#FFFBEB", border:"#FDE68A", adminOnly:false, superOnly:false, entryOnly:false },
+    // TRAI Survey — one combined tile (Master Upload + Report as sub-tabs) for subdivision_admin and above
+    { icon:"📡", label:"TRAI Survey",    path:"/trai-survey",   color:"#EBF8FF", border:"#BEE3F8", adminOnly:true,  superOnly:false, entryOnly:false },
+    // TRAI Survey — data entry tile for BO/SO/HO users only
+    { icon:"📡", label:"TRAI Survey",    path:"/trai-survey-entry", color:"#FFF7ED", border:"#FDBA74", adminOnly:false, superOnly:false, entryOnly:true },
     // ← Chart button — only for admin levels
-    { icon:"📉", label:"ECR Progress",   path:"__charts__",     color:"#ECFDF5", border:"#6EE7B7", adminOnly:true,  superOnly:false },
-    { icon:"🔧", label:"Fix ECR Data",   path:"/admin/fix-ecr", color:"#FFF5F5", border:"#FECACA", adminOnly:false, superOnly:true  },
+    { icon:"📉", label:"ECR Progress",   path:"__charts__",     color:"#ECFDF5", border:"#6EE7B7", adminOnly:true,  superOnly:false, entryOnly:false },
+    { icon:"🔧", label:"Fix ECR Data",   path:"/admin/fix-ecr", color:"#FFF5F5", border:"#FECACA", adminOnly:false, superOnly:true,  entryOnly:false },
   ].filter(a => {
     if (a.superOnly) return p.role === "superadmin";
+    if (a.entryOnly) return isEntryLevel;
     if (a.adminOnly) return isAdminLevel;
     return true;
   });
