@@ -224,7 +224,7 @@ export default function TraiSurveyPage() {
         const batch = writeBatch(db);
         chunk.forEach(row => {
           const docId = `${row.office.id}_${row.villageCode}`;
-          const ref = doc(db, "villageData", docId);
+          const ref = doc(db, "traiSurveyData", docId);
           batch.set(ref, {
             officeId: row.office.id,
             officeName: row.office.name,
@@ -287,7 +287,7 @@ export default function TraiSurveyPage() {
     try {
       const scopeConstraints = getScopeConstraints();
       const [villageSnap, officeSnap] = await Promise.all([
-        getDocs(scopeConstraints.length ? query(collection(db, "villageData"), ...scopeConstraints) : collection(db, "villageData")),
+        getDocs(scopeConstraints.length ? query(collection(db, "traiSurveyData"), ...scopeConstraints) : collection(db, "traiSurveyData")),
         getDocs(scopeConstraints.length ? query(collection(db, "offices"), ...scopeConstraints) : collection(db, "offices")),
       ]);
       setVillages(villageSnap.docs.map(d => ({ id: d.id, ...d.data() } as VillageDoc)));
