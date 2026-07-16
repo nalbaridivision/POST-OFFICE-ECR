@@ -93,7 +93,7 @@ export default function VillageDataEntryPage() {
     setLoading(true);
     try {
       const snap = await getDocs(
-        query(collection(db, "villageData"), where("officeId", "==", myOffice))
+        query(collection(db, "traiSurveyData"), where("officeId", "==", myOffice))
       );
       const data = snap.docs.map(d => ({ id: d.id, ...d.data() } as VillageDoc));
       setVillages(data.sort((a, b) => (a.villageName || "").localeCompare(b.villageName || "")));
@@ -153,7 +153,7 @@ export default function VillageDataEntryPage() {
       const bsnlProc = calcProcurement(form.bsnl, form.bsnlSimAvailable);
       const jioProc = calcProcurement(form.rjil, form.jioSimAvailable);
 
-      const ref = doc(db, "villageData", openVillageId);
+      const ref = doc(db, "traiSurveyData", openVillageId);
       await setDoc(ref, {
         vil: form.vil,
         rjil: form.rjil,
