@@ -4,7 +4,7 @@ import { useAuth } from "../../context/AuthContext";
 import { useRouter } from "next/navigation";
 import { db } from "../firebase";
 import {
-  collection, getDocs, query, where, writeBatch, doc
+  collection, getDocs, query, where, writeBatch, doc, setDoc, deleteDoc
 } from "firebase/firestore";
 import BottomNav from "../../components/BottomNav";
 
@@ -64,7 +64,7 @@ interface OfficeSummary {
   pending: number;
 }
 
-type MainTab = "upload" | "report";
+type MainTab = "upload" | "manage" | "report";
 type ReportSubTab = "submitted" | "notsub-office" | "notsub-village";
 
 const TRAI_ADMIN_ROLES = ["superadmin", "circle_admin", "region_admin", "division_admin", "subdivision_admin"];
@@ -91,7 +91,7 @@ export default function TraiSurveyPage() {
   }, [user, profile]);
 
   useEffect(() => {
-    if (mainTab === "report" && !reportLoadedOnce) fetchReportData();
+    if ((mainTab === "report" || mainTab === "manage") && !reportLoadedOnce) fetchReportData();
   }, [mainTab]);
 
   function showToast(msg: string) {
@@ -344,6 +344,140 @@ export default function TraiSurveyPage() {
       (v.officeName || "").toLowerCase().includes(s));
   }, [pendingVillages, searchVillage]);
 
+  // ═══════════════════════════════════════════════════════════
+  // MANAGE — add village manually, edit/remap, delete
+  // ═══════════════════════════════════════════════════════════
+  const [manualOfficeId, setManualOfficeId] = useState("");
+  const [manualVillageCode, setManualVillageCode] = useState("");
+  const [manualVillageName, setManualVillageName] = useState("");
+  const [manualAdding, setManualAdding] = useState(false);
+
+  const [searchManage, setSearchManage] = useState("");
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editOfficeId, setEditOfficeId] = useState("");
+  const [editVillageCode, setEditVillageCode] = useState("");
+  const [editVillageName, setEditVillageName] = useState("");
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+
+  const displayManage = useMemo(() => {
+    if (!searchManage) return villages;
+    const s = searchManage.toLowerCase();
+    return villages.filter(v =>
+      (v.villageName || "").toLowerCase().includes(s) ||
+      (v.villageCode || "").toLowerCase().includes(s) ||
+      (v.officeName || "").toLowerCase().includes(s));
+  }, [villages, searchManage]);
+
+  async function handleManualAdd() {
+    if (!manualOfficeId || !manualVillageCode.trim() || !manualVillageName.trim()) {
+      showToast("Please fill office, village code, and village name");
+      return;
+    }
+    const office = offices.find(o => o.id === manualOfficeId);
+    if (!office) { showToast("Office not found"); return; }
+
+    setManualAdding(true);
+    try {
+      const docId = `${office.id}_${manualVillageCode.trim()}`;
+      const ref = doc(db, "traiSurveyData", docId);
+      await setDoc(ref, {
+        officeId: office.id,
+        officeName: office.name,
+        villageCode: manualVillageCode.trim(),
+        villageName: manualVillageName.trim(),
+        circleCode: office.circleCode || null,
+        regionCode: office.regionCode || null,
+        divisionCode: office.divisionCode || null,
+        subDivCode: office.subDivCode || null,
+        masterUploadedBy: user?.uid || null,
+        masterUploadedAt: new Date().toISOString(),
+      }, { merge: true });
+
+      showToast(`✅ "${manualVillageName}" added to ${office.name}`);
+      setManualOfficeId(""); setManualVillageCode(""); setManualVillageName("");
+      fetchReportData();
+    } catch (e: any) {
+      showToast("Error: " + e.message);
+    } finally {
+      setManualAdding(false);
+    }
+  }
+
+  function openEdit(v: VillageDoc) {
+    setEditingId(v.id);
+    setEditOfficeId(v.officeId);
+    setEditVillageCode(v.villageCode);
+    setEditVillageName(v.villageName);
+    setConfirmDeleteId(null);
+  }
+
+  function cancelEdit() {
+    setEditingId(null);
+  }
+
+  async function handleSaveEdit(original: VillageDoc) {
+    if (!editOfficeId || !editVillageCode.trim() || !editVillageName.trim()) {
+      showToast("Please fill office, village code, and village name");
+      return;
+    }
+    const newOffice = offices.find(o => o.id === editOfficeId) || reportOffices.find(o => o.id === editOfficeId);
+    if (!newOffice) { showToast("Office not found"); return; }
+
+    setSavingEdit(true);
+    try {
+      const newDocId = `${newOffice.id}_${editVillageCode.trim()}`;
+      const moved = newDocId !== original.id;
+
+      // Preserve all existing survey fields (vil, rjil, SIM data, dataSubmitted, etc.)
+      // while updating office/village identity fields.
+      const payload: any = {
+        ...original,
+        officeId: newOffice.id,
+        officeName: newOffice.name,
+        villageCode: editVillageCode.trim(),
+        villageName: editVillageName.trim(),
+        circleCode: newOffice.circleCode || null,
+        regionCode: newOffice.regionCode || null,
+        divisionCode: newOffice.divisionCode || null,
+        subDivCode: newOffice.subDivCode || null,
+      };
+      delete payload.id;
+
+      if (moved) {
+        await setDoc(doc(db, "traiSurveyData", newDocId), payload, { merge: true });
+        await deleteDoc(doc(db, "traiSurveyData", original.id));
+        showToast(`✅ Moved "${editVillageName}" to ${newOffice.name}`);
+      } else {
+        await setDoc(doc(db, "traiSurveyData", original.id), payload, { merge: true });
+        showToast(`✅ Updated "${editVillageName}"`);
+      }
+
+      setEditingId(null);
+      fetchReportData();
+    } catch (e: any) {
+      showToast("Error: " + e.message);
+    } finally {
+      setSavingEdit(false);
+    }
+  }
+
+  async function handleDeleteVillage(v: VillageDoc) {
+    if (confirmDeleteId !== v.id) {
+      setConfirmDeleteId(v.id);
+      return;
+    }
+    try {
+      await deleteDoc(doc(db, "traiSurveyData", v.id));
+      showToast(`🗑️ "${v.villageName}" deleted`);
+      setConfirmDeleteId(null);
+      setEditingId(null);
+      fetchReportData();
+    } catch (e: any) {
+      showToast("Error: " + e.message);
+    }
+  }
+
   const totalViProc = submittedVillages.reduce((a, v) => a + (v.viSimProcurementRequired || 0), 0);
   const totalAirtelProc = submittedVillages.reduce((a, v) => a + (v.airtelSimProcurementRequired || 0), 0);
   const totalBsnlProc = submittedVillages.reduce((a, v) => a + (v.bsnlSimProcurementRequired || 0), 0);
@@ -410,19 +544,24 @@ export default function TraiSurveyPage() {
           <div>
             <h1 style={{ fontSize: 20, fontWeight: 700, margin: "0 0 2px" }}>📡 TRAI Survey</h1>
             <div style={{ fontSize: 13, opacity: .85 }}>
-              {mainTab === "upload" ? "Village master upload" : `${villages.length} villages in your scope`}
+              {mainTab === "upload" ? "Village master upload" : mainTab === "manage" ? "Add & fix villages" : `${villages.length} villages in your scope`}
             </div>
           </div>
           <button onClick={() => router.push("/dashboard")} style={hBtn}>← Back</button>
         </div>
 
         {/* Main tabs */}
-        <div style={{ display: "flex", gap: 6, marginTop: 12 }}>
+        <div style={{ display: "flex", gap: 6, marginTop: 12, flexWrap: "wrap" as const }}>
           <button onClick={() => setMainTab("upload")} style={{
             ...tabBtn,
             background: mainTab === "upload" ? "rgba(255,255,255,0.95)" : "rgba(255,255,255,0.2)",
             color: mainTab === "upload" ? "#1565C0" : "#fff",
           }}>📤 Master Upload</button>
+          <button onClick={() => setMainTab("manage")} style={{
+            ...tabBtn,
+            background: mainTab === "manage" ? "rgba(255,255,255,0.95)" : "rgba(255,255,255,0.2)",
+            color: mainTab === "manage" ? "#1565C0" : "#fff",
+          }}>✏️ Manage</button>
           <button onClick={() => setMainTab("report")} style={{
             ...tabBtn,
             background: mainTab === "report" ? "rgba(255,255,255,0.95)" : "rgba(255,255,255,0.2)",
@@ -533,6 +672,168 @@ export default function TraiSurveyPage() {
                   </div>
                 )}
               </>
+            )}
+          </>
+        )}
+
+        {/* ═══════════════ MANAGE TAB ═══════════════ */}
+        {mainTab === "manage" && (
+          <>
+            {/* Add village manually */}
+            <div style={card}>
+              <div style={sHead}>➕ Add Village Manually</div>
+              <div style={{ fontSize: 12, color: "#718096", marginBottom: 12 }}>
+                Use this when a village is missing from an office, or an office wasn't matched during Excel upload.
+              </div>
+
+              <label style={labelStyle}>Office</label>
+              <select
+                value={manualOfficeId}
+                onChange={e => setManualOfficeId(e.target.value)}
+                style={{ ...inputStyle, marginBottom: 10 }}
+              >
+                <option value="">— Select office —</option>
+                {offices.slice().sort((a, b) => a.name.localeCompare(b.name)).map(o => (
+                  <option key={o.id} value={o.id}>{o.name}</option>
+                ))}
+              </select>
+
+              <label style={labelStyle}>Village Code</label>
+              <input
+                type="text"
+                placeholder="e.g. 279595"
+                value={manualVillageCode}
+                onChange={e => setManualVillageCode(e.target.value)}
+                style={{ ...inputStyle, marginBottom: 10 }}
+              />
+
+              <label style={labelStyle}>Village Name</label>
+              <input
+                type="text"
+                placeholder="e.g. Khokhshaguri Block"
+                value={manualVillageName}
+                onChange={e => setManualVillageName(e.target.value)}
+                style={{ ...inputStyle, marginBottom: 14 }}
+              />
+
+              <button
+                onClick={handleManualAdd}
+                disabled={manualAdding}
+                style={{
+                  width: "100%", padding: 12,
+                  background: manualAdding ? "#90CDF4" : "#1565C0",
+                  color: "#fff", border: "none", borderRadius: 10,
+                  fontSize: 14, fontWeight: 700,
+                  cursor: manualAdding ? "not-allowed" : "pointer"
+                }}
+              >
+                {manualAdding ? "Adding…" : "➕ Add Village"}
+              </button>
+            </div>
+
+            {/* Edit / Remap / Delete existing villages */}
+            <div style={sHead}>✏️ Edit, Remap, or Delete Existing Villages</div>
+            <input
+              type="text"
+              placeholder="🔍 Search by village, code, or office"
+              style={{ ...inputStyle, marginBottom: 10 }}
+              value={searchManage}
+              onChange={e => setSearchManage(e.target.value)}
+            />
+
+            {loadingReport ? (
+              <div style={{ textAlign: "center" as const, padding: 40, color: "#A0AEC0" }}>Loading…</div>
+            ) : displayManage.length === 0 ? (
+              <EmptyState icon="🔍" title="No villages found" subtitle={searchManage ? "Try a different search" : "Upload or add a village first"} />
+            ) : (
+              displayManage.map(v => (
+                <div key={v.id} style={{ background: "#fff", border: "1px solid #E2E8F0", borderRadius: 12, padding: "12px 14px", marginBottom: 8 }}>
+                  {editingId !== v.id ? (
+                    <>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                        <div>
+                          <div style={{ fontSize: 14, fontWeight: 700, color: "#1A202C" }}>{v.villageName}</div>
+                          <div style={{ fontSize: 11, color: "#A0AEC0" }}>{v.officeName || v.officeId} · Code: {v.villageCode}</div>
+                        </div>
+                        <span style={{
+                          fontSize: 10, fontWeight: 700,
+                          background: v.dataSubmitted ? "#DCFCE7" : "#FFFBEB",
+                          color: v.dataSubmitted ? "#16A34A" : "#D97706",
+                          padding: "3px 10px", borderRadius: 20
+                        }}>{v.dataSubmitted ? "✅ Submitted" : "⏳ Pending"}</span>
+                      </div>
+                      <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                        <button onClick={() => openEdit(v)} style={{
+                          flex: 1, padding: "8px 4px", background: "#EBF8FF", color: "#1565C0",
+                          border: "1px solid #BEE3F8", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: "pointer"
+                        }}>✏️ Edit / Remap</button>
+                        <button onClick={() => handleDeleteVillage(v)} style={{
+                          flex: 1, padding: "8px 4px",
+                          background: confirmDeleteId === v.id ? "#DC2626" : "#FEE2E2",
+                          color: confirmDeleteId === v.id ? "#fff" : "#DC2626",
+                          border: "1px solid #FECACA", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: "pointer"
+                        }}>{confirmDeleteId === v.id ? "⚠️ Confirm Delete?" : "🗑️ Delete"}</button>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: "#1565C0", marginBottom: 10 }}>
+                        Editing: {v.villageName}
+                        {v.dataSubmitted && (
+                          <span style={{ display: "block", fontSize: 11, fontWeight: 500, color: "#D97706", marginTop: 4 }}>
+                            ⚠️ This village already has submitted survey data — that data will be kept and moved with it.
+                          </span>
+                        )}
+                      </div>
+
+                      <label style={labelStyle}>Office</label>
+                      <select
+                        value={editOfficeId}
+                        onChange={e => setEditOfficeId(e.target.value)}
+                        style={{ ...inputStyle, marginBottom: 10 }}
+                      >
+                        <option value="">— Select office —</option>
+                        {offices.slice().sort((a, b) => a.name.localeCompare(b.name)).map(o => (
+                          <option key={o.id} value={o.id}>{o.name}</option>
+                        ))}
+                      </select>
+
+                      <label style={labelStyle}>Village Code</label>
+                      <input
+                        type="text"
+                        value={editVillageCode}
+                        onChange={e => setEditVillageCode(e.target.value)}
+                        style={{ ...inputStyle, marginBottom: 10 }}
+                      />
+
+                      <label style={labelStyle}>Village Name</label>
+                      <input
+                        type="text"
+                        value={editVillageName}
+                        onChange={e => setEditVillageName(e.target.value)}
+                        style={{ ...inputStyle, marginBottom: 12 }}
+                      />
+
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <button onClick={cancelEdit} style={{
+                          flex: 1, padding: 10, background: "#E2E8F0", color: "#4A5568",
+                          border: "none", borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: "pointer"
+                        }}>Cancel</button>
+                        <button
+                          onClick={() => handleSaveEdit(v)}
+                          disabled={savingEdit}
+                          style={{
+                            flex: 2, padding: 10,
+                            background: savingEdit ? "#90CDF4" : "#1565C0",
+                            color: "#fff", border: "none", borderRadius: 8,
+                            fontSize: 13, fontWeight: 700, cursor: savingEdit ? "not-allowed" : "pointer"
+                          }}
+                        >{savingEdit ? "Saving…" : "💾 Save Changes"}</button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              ))
             )}
           </>
         )}
@@ -704,6 +1005,7 @@ function EmptyState({ icon, title, subtitle }: { icon: string; title: string; su
 const card: React.CSSProperties = { background: "#fff", border: "1px solid #E2E8F0", borderRadius: 12, padding: 16, marginBottom: 12 };
 const sHead: React.CSSProperties = { fontSize: 12, fontWeight: 700, color: "#718096", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 10 };
 const inputStyle: React.CSSProperties = { width: "100%", padding: "9px 11px", fontSize: 14, border: "1.5px solid #E2E8F0", borderRadius: 8, color: "#1A202C", background: "#fff", boxSizing: "border-box", outline: "none" };
+const labelStyle: React.CSSProperties = { display: "block", fontSize: 11, fontWeight: 600, color: "#4A5568", textTransform: "uppercase", letterSpacing: "0.3px", marginBottom: 4 };
 const hBtn: React.CSSProperties = { background: "rgba(255,255,255,0.2)", border: "1px solid rgba(255,255,255,0.4)", color: "#fff", borderRadius: 8, padding: "7px 14px", fontSize: 12, fontWeight: 600, cursor: "pointer" };
 const tabBtn: React.CSSProperties = { padding: "7px 14px", borderRadius: 20, border: "none", fontWeight: 600, fontSize: 12, cursor: "pointer" };
 const exportBtn: React.CSSProperties = { display: "block", width: "100%", padding: "10px 14px", background: "#1565C0", color: "#fff", border: "none", borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: "pointer", textAlign: "center" as const, marginBottom: 12 };
