@@ -1,8 +1,8 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { useAuth } from "../../context/AuthContext";
-import { useRouter } from "next/navigation";
+import { useAuth } from "../../../context/AuthContext";
+import { db } from "../../firebase";
+import BottomNav from "../../../components/BottomNav";
 import { db } from "../firebase";
 import {
   collection, doc, setDoc, getDocs,
