@@ -41,9 +41,16 @@ interface OfficeRow {
 type FilterParam = "excessCash" | "posbIndexed" | "pliPremium" | "rpliPremium" | "closingBalance";
 type FilterOp = "above" | "below" | "between";
 type TabType = "list" | "filter" | "notsubmitted";
+type ConsolidatedView = "datewise" | "headwise";
+type ConsolidatedMode = "count" | "cumulative";
 
 // Roles allowed to see "not submitted"
 const NOT_SUBMITTED_ROLES = ["superadmin", "circle_admin", "division_admin", "subdivision_admin"];
+
+// Roles at Sub-Division level or higher in the hierarchy — for these roles,
+// a Date Range selection ALSO shows a CONSOLIDATED (aggregated) report for the
+// whole period, in addition to the existing per-office-per-day list below.
+const HIGHER_HIERARCHY_ROLES = ["superadmin", "circle_admin", "region_admin", "division_admin", "subdivision_admin"];
 
 export default function DailyReportPage() {
   const { profile, user } = useAuth();
@@ -70,6 +77,10 @@ export default function DailyReportPage() {
   const [filterResult, setFilterResult] = useState<DailyRecord[] | null>(null);
 
   const [activeTab, setActiveTab] = useState<TabType>("list");
+
+  // Consolidated (range) report — datewise/headwise × count/cumulative
+  const [consolidatedView, setConsolidatedView] = useState<ConsolidatedView>("datewise");
+  const [consolidatedMode, setConsolidatedMode] = useState<ConsolidatedMode>("cumulative");
 
   // Not submitted state
   const [checkDate, setCheckDate] = useState(today);
@@ -268,6 +279,105 @@ export default function DailyReportPage() {
   const excessCount = records.filter(r => r.cashStatus === "excess").length;
   const lowCount = records.filter(r => r.cashStatus === "low").length;
 
+  // NEW: Consolidated (range) report for Sub-Division-and-above roles.
+  // Shown only when a Date Range is selected — aggregates the whole period
+  // instead of showing every office-date row individually.
+  const isConsolidated = viewMode === "range" && HIGHER_HIERARCHY_ROLES.includes(profile?.role || "");
+
+  interface ConsolidatedRow {
+    key: string;
+    label: string;      // date (datewise) or office name (headwise)
+    subLabel?: string;  // office id, when headwise
+    count: number;       // offices reported (datewise) or entries submitted (headwise)
+    excessCount: number;
+    lowCount: number;
+    normalCount: number;
+    totalExcessCash: number;
+    totalPOSB: number;
+    totalPLIPolicies: number;
+    totalPLIPremium: number;
+    totalRPLIPolicies: number;
+    totalRPLIPremium: number;
+  }
+
+  function buildConsolidatedRows(): ConsolidatedRow[] {
+    const map: Record<string, ConsolidatedRow> = {};
+    displayRecords.forEach(r => {
+      const key = consolidatedView === "datewise" ? r.date : r.officeId;
+      if (!map[key]) {
+        map[key] = {
+          key,
+          label: consolidatedView === "datewise" ? r.date : (r.officeName || r.officeId),
+          subLabel: consolidatedView === "headwise" ? r.officeId : undefined,
+          count: 0, excessCount: 0, lowCount: 0, normalCount: 0,
+          totalExcessCash: 0, totalPOSB: 0,
+          totalPLIPolicies: 0, totalPLIPremium: 0,
+          totalRPLIPolicies: 0, totalRPLIPremium: 0,
+        };
+      }
+      const row = map[key];
+      row.count += 1;
+      if (r.cashStatus === "excess") row.excessCount += 1;
+      else if (r.cashStatus === "low") row.lowCount += 1;
+      else row.normalCount += 1;
+      row.totalExcessCash += r.excessCash || 0;
+      row.totalPOSB += r.posbIndexed || 0;
+      row.totalPLIPolicies += r.pliPolicies || 0;
+      row.totalPLIPremium += r.pliPremium || 0;
+      row.totalRPLIPolicies += r.rpliPolicies || 0;
+      row.totalRPLIPremium += r.rpliPremium || 0;
+    });
+    const rows = Object.values(map);
+    return consolidatedView === "datewise"
+      ? rows.sort((a, b) => b.label.localeCompare(a.label))
+      : rows.sort((a, b) => b.totalExcessCash - a.totalExcessCash);
+  }
+
+  const consolidatedRows = isConsolidated ? buildConsolidatedRows() : [];
+
+  const consolidatedTotals = consolidatedRows.reduce((a, r) => ({
+    count: a.count + r.count,
+    excessCount: a.excessCount + r.excessCount,
+    lowCount: a.lowCount + r.lowCount,
+    normalCount: a.normalCount + r.normalCount,
+    totalExcessCash: a.totalExcessCash + r.totalExcessCash,
+    totalPOSB: a.totalPOSB + r.totalPOSB,
+    totalPLIPolicies: a.totalPLIPolicies + r.totalPLIPolicies,
+    totalPLIPremium: a.totalPLIPremium + r.totalPLIPremium,
+    totalRPLIPolicies: a.totalRPLIPolicies + r.totalRPLIPolicies,
+    totalRPLIPremium: a.totalRPLIPremium + r.totalRPLIPremium,
+  }), {
+    count: 0, excessCount: 0, lowCount: 0, normalCount: 0,
+    totalExcessCash: 0, totalPOSB: 0,
+    totalPLIPolicies: 0, totalPLIPremium: 0,
+    totalRPLIPolicies: 0, totalRPLIPremium: 0,
+  });
+
+  async function exportConsolidated() {
+    const XLSX = await import("xlsx");
+    const rows = consolidatedRows.map((r, i) => ({
+      Rank: i + 1,
+      [consolidatedView === "datewise" ? "Date" : "Office"]: r.label,
+      OfficeId: r.subLabel || "",
+      [consolidatedView === "datewise" ? "OfficesReported" : "EntriesSubmitted"]: r.count,
+      ExcessCount: r.excessCount,
+      LowCount: r.lowCount,
+      NormalCount: r.normalCount,
+      TotalExcessCash: r.totalExcessCash,
+      TotalPOSBIndexed: r.totalPOSB,
+      TotalPLIPolicies: r.totalPLIPolicies,
+      TotalPLIPremium: r.totalPLIPremium,
+      TotalRPLIPolicies: r.totalRPLIPolicies,
+      TotalRPLIPremium: r.totalRPLIPremium,
+    }));
+    const ws = XLSX.utils.json_to_sheet(rows);
+    ws["!cols"] = Array(12).fill({ wch: 16 });
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Consolidated");
+    XLSX.writeFile(wb, `Consolidated_${consolidatedView}_${consolidatedMode}_${fromDate}_to_${toDate}.xlsx`);
+    showToast("✅ Consolidated report exported!");
+  }
+
   // Tabs to show
   const tabs = [
     { id: "list" as TabType, label: "📋 Office List", show: true },
@@ -404,6 +514,145 @@ export default function DailyReportPage() {
                 value={officeSearch}
                 onChange={e => setOfficeSearch(e.target.value)}
               />
+            )}
+
+            {/* NEW: Consolidated period report — Sub-Division-and-above roles, Date Range mode */}
+            {isConsolidated && !loading && records.length > 0 && (
+              <div style={card}>
+                <div style={sHead}>
+                  📊 Consolidated Report ({fromDate} to {toDate})
+                </div>
+
+                {/* Datewise / Headwise toggle */}
+                <div style={{
+                  display: "flex", gap: 0, marginBottom: 8,
+                  borderRadius: 8, overflow: "hidden", border: "1px solid #E2E8F0"
+                }}>
+                  <button onClick={() => setConsolidatedView("datewise")} style={{
+                    flex: 1, padding: "8px", border: "none", cursor: "pointer",
+                    fontWeight: 600, fontSize: 12,
+                    background: consolidatedView === "datewise" ? "#1565C0" : "#fff",
+                    color: consolidatedView === "datewise" ? "#fff" : "#718096",
+                  }}>📅 Datewise</button>
+                  <button onClick={() => setConsolidatedView("headwise")} style={{
+                    flex: 1, padding: "8px", border: "none", cursor: "pointer",
+                    fontWeight: 600, fontSize: 12,
+                    background: consolidatedView === "headwise" ? "#1565C0" : "#fff",
+                    color: consolidatedView === "headwise" ? "#fff" : "#718096",
+                  }}>🏢 Headwise (Office)</button>
+                </div>
+
+                {/* Count / Cumulative toggle */}
+                <div style={{
+                  display: "flex", gap: 0, marginBottom: 12,
+                  borderRadius: 8, overflow: "hidden", border: "1px solid #E2E8F0"
+                }}>
+                  <button onClick={() => setConsolidatedMode("count")} style={{
+                    flex: 1, padding: "8px", border: "none", cursor: "pointer",
+                    fontWeight: 600, fontSize: 12,
+                    background: consolidatedMode === "count" ? "#0F766E" : "#fff",
+                    color: consolidatedMode === "count" ? "#fff" : "#718096",
+                  }}>🔢 Count</button>
+                  <button onClick={() => setConsolidatedMode("cumulative")} style={{
+                    flex: 1, padding: "8px", border: "none", cursor: "pointer",
+                    fontWeight: 600, fontSize: 12,
+                    background: consolidatedMode === "cumulative" ? "#0F766E" : "#fff",
+                    color: consolidatedMode === "cumulative" ? "#fff" : "#718096",
+                  }}>Σ Cumulative</button>
+                </div>
+
+                {consolidatedRows.length > 0 && (
+                  <button onClick={exportConsolidated} style={exportBtn}>
+                    📥 Export Consolidated ({consolidatedView === "datewise" ? "Datewise" : "Headwise"} · {consolidatedMode === "count" ? "Count" : "Cumulative"})
+                  </button>
+                )}
+
+                {consolidatedRows.length === 0 ? (
+                  <div style={{ textAlign: "center" as const, padding: 20, color: "#A0AEC0", fontSize: 13 }}>
+                    No data for the selected period
+                  </div>
+                ) : (
+                  <div style={{
+                    background: "#fff", borderRadius: 12,
+                    border: "1px solid #E2E8F0", overflow: "hidden"
+                  }}>
+                    {/* Header row */}
+                    <div style={{
+                      display: "grid",
+                      gridTemplateColumns: consolidatedMode === "count" ? "1.4fr auto auto auto" : "1.4fr auto auto auto auto",
+                      padding: "10px 12px", background: "#F7FAFC",
+                      borderBottom: "1px solid #E2E8F0"
+                    }}>
+                      {(consolidatedMode === "count"
+                        ? [consolidatedView === "datewise" ? "Date" : "Office", "Reported", "Excess", "Low"]
+                        : [consolidatedView === "datewise" ? "Date" : "Office", "Excess ₹", "POSB", "PLI ₹", "RPLI ₹"]
+                      ).map(h => (
+                        <div key={h} style={{
+                          fontSize: 10, fontWeight: 700, color: "#718096",
+                          textTransform: "uppercase" as const, textAlign: h === (consolidatedView === "datewise" ? "Date" : "Office") ? "left" as const : "right" as const
+                        }}>
+                          {h}
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Data rows */}
+                    {consolidatedRows.map((r, i) => (
+                      <div key={r.key} style={{
+                        display: "grid",
+                        gridTemplateColumns: consolidatedMode === "count" ? "1.4fr auto auto auto" : "1.4fr auto auto auto auto",
+                        padding: "9px 12px",
+                        borderBottom: i < consolidatedRows.length - 1 ? "1px solid #F7FAFC" : "none",
+                        background: i % 2 === 0 ? "#fff" : "#FAFAFA",
+                        alignItems: "center"
+                      }}>
+                        <div>
+                          <div style={{ fontSize: 12, fontWeight: 700, color: "#1A202C" }}>{r.label}</div>
+                          {r.subLabel && <div style={{ fontSize: 9, color: "#A0AEC0" }}>{r.subLabel}</div>}
+                        </div>
+                        {consolidatedMode === "count" ? (
+                          <>
+                            <div style={{ fontSize: 12, fontWeight: 700, color: "#1D4ED8", textAlign: "right" as const }}>{r.count}</div>
+                            <div style={{ fontSize: 12, fontWeight: 700, color: "#DC2626", textAlign: "right" as const }}>{r.excessCount}</div>
+                            <div style={{ fontSize: 12, fontWeight: 700, color: "#D97706", textAlign: "right" as const }}>{r.lowCount}</div>
+                          </>
+                        ) : (
+                          <>
+                            <div style={{ fontSize: 12, fontWeight: 700, color: "#DC2626", textAlign: "right" as const }}>₹{r.totalExcessCash.toLocaleString("en-IN")}</div>
+                            <div style={{ fontSize: 12, fontWeight: 700, color: "#1D4ED8", textAlign: "right" as const }}>{r.totalPOSB}</div>
+                            <div style={{ fontSize: 12, fontWeight: 700, color: "#0F766E", textAlign: "right" as const }}>₹{r.totalPLIPremium.toLocaleString("en-IN")}</div>
+                            <div style={{ fontSize: 12, fontWeight: 700, color: "#7C3AED", textAlign: "right" as const }}>₹{r.totalRPLIPremium.toLocaleString("en-IN")}</div>
+                          </>
+                        )}
+                      </div>
+                    ))}
+
+                    {/* Grand total row */}
+                    <div style={{
+                      display: "grid",
+                      gridTemplateColumns: consolidatedMode === "count" ? "1.4fr auto auto auto" : "1.4fr auto auto auto auto",
+                      padding: "10px 12px", background: "#EBF8FF",
+                      borderTop: "2px solid #BEE3F8"
+                    }}>
+                      <div style={{ fontSize: 12, fontWeight: 800, color: "#1D4ED8" }}>GRAND TOTAL</div>
+                      {consolidatedMode === "count" ? (
+                        <>
+                          <div style={{ fontSize: 12, fontWeight: 800, color: "#1D4ED8", textAlign: "right" as const }}>{consolidatedTotals.count}</div>
+                          <div style={{ fontSize: 12, fontWeight: 800, color: "#DC2626", textAlign: "right" as const }}>{consolidatedTotals.excessCount}</div>
+                          <div style={{ fontSize: 12, fontWeight: 800, color: "#D97706", textAlign: "right" as const }}>{consolidatedTotals.lowCount}</div>
+                        </>
+                      ) : (
+                        <>
+                          <div style={{ fontSize: 12, fontWeight: 800, color: "#DC2626", textAlign: "right" as const }}>₹{consolidatedTotals.totalExcessCash.toLocaleString("en-IN")}</div>
+                          <div style={{ fontSize: 12, fontWeight: 800, color: "#1D4ED8", textAlign: "right" as const }}>{consolidatedTotals.totalPOSB}</div>
+                          <div style={{ fontSize: 12, fontWeight: 800, color: "#0F766E", textAlign: "right" as const }}>₹{consolidatedTotals.totalPLIPremium.toLocaleString("en-IN")}</div>
+                          <div style={{ fontSize: 12, fontWeight: 800, color: "#7C3AED", textAlign: "right" as const }}>₹{consolidatedTotals.totalRPLIPremium.toLocaleString("en-IN")}</div>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
             )}
 
             {displayRecords.length > 0 && (
