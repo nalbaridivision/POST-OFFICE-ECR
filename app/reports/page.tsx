@@ -40,6 +40,9 @@ function monthLabel(m:string){
   const [y,mo]=m.split("-");
   return new Date(+y,+mo-1).toLocaleString("default",{month:"short",year:"numeric"});
 }
+function monthShort(mo:string){
+  return new Date(2024,parseInt(mo)-1).toLocaleString("default",{month:"short"});
+}
 function lastNMonths(n:number){
   const r:string[]=[];
   const d=new Date();
@@ -221,13 +224,22 @@ function GroupCard({groupKey,records,groupLabel}:{groupKey:string;records:ECRRec
   );
 }
 
-function CompareRow({office,ecr1,ecr2,month1,month2}:{
-  office:string;ecr1:number;ecr2:number;month1:string;month2:string;}){
+function CompareRow({office,ecr1,ecr2,month1,month2,monthTag}:{
+  office:string;ecr1:number;ecr2:number;month1:string;month2:string;monthTag?:string}){
   const diff=ecr2-ecr1,color=diff>0?"#16A34A":diff<0?"#DC2626":"#718096";
   return(
     <div style={{background:"#fff",borderRadius:10,padding:"12px 14px",
       border:"1px solid #E2E8F0",marginBottom:8}}>
-      <div style={{fontSize:13,fontWeight:600,color:"#1A202C",marginBottom:8}}>{office}</div>
+      <div style={{display:"flex",justifyContent:"space-between",
+        alignItems:"center",marginBottom:6}}>
+        <div style={{fontSize:13,fontWeight:600,color:"#1A202C"}}>{office}</div>
+        {monthTag&&(
+          <span style={{fontSize:10,fontWeight:700,background:"#EBF8FF",
+            color:"#1D4ED8",padding:"2px 8px",borderRadius:10}}>
+            {monthTag}
+          </span>
+        )}
+      </div>
       <div style={{display:"flex",gap:8,alignItems:"center"}}>
         <div style={{flex:1,textAlign:"center" as const,background:ecrBg(ecr1),
           borderRadius:8,padding:"8px 4px"}}>
@@ -369,9 +381,24 @@ export default function ReportsPage(){
   const [sortKey,setSortKey]=useState<SortKey>("ecr_desc");
   const [month1,setMonth1]=useState(months6[months6.length-2]);
   const [month2,setMonth2]=useState(months6[months6.length-1]);
+
+  // ── YoY state — multi-month ──────────────────────────────────
   const [year1,setYear1]=useState(String(curYear-1));
   const [year2,setYear2]=useState(String(curYear));
-  const [yoyMonth,setYoyMonth]=useState(String(new Date().getMonth()+1).padStart(2,"0"));
+  const [yoyMonths,setYoyMonths]=useState<string[]>(
+    [String(new Date().getMonth()+1).padStart(2,"0")]
+  );
+  const [yoyGroupByMonth,setYoyGroupByMonth]=useState(false);
+
+  function toggleYoyMonth(m:string){
+    setYoyMonths(prev=>
+      prev.includes(m)
+        ? prev.length===1 ? prev  // keep at least 1 selected
+          : prev.filter(x=>x!==m)
+        : [...prev,m].sort()
+    );
+  }
+
   const [groupBy,setGroupBy]=useState<GroupBy>("division");
   const [conMonth,setConMonth]=useState(months6[months6.length-1]);
   const [filterParam,setFilterParam]=useState<FilterParam>("ecr");
@@ -380,8 +407,6 @@ export default function ReportsPage(){
   const [filterVal2,setFilterVal2]=useState("");
   const [filterMonth,setFilterMonth]=useState(months6[months6.length-1]);
   const [filterResult,setFilterResult]=useState<ECRRecord[]|null>(null);
-
-  // ── NEW: Office search state ──────────────────────────────────
   const [officeSearch,setOfficeSearch]=useState("");
   const [officeSearchResult,setOfficeSearchResult]=useState<ECRRecord[]|null>(null);
 
@@ -417,17 +442,13 @@ export default function ReportsPage(){
 
   function showToast(msg:string){setToast(msg);setTimeout(()=>setToast(""),3000);}
 
-  // ── Office search ──────────────────────────────────────────────
   function searchByOffice(){
-    if(!officeSearch.trim()){
-      setOfficeSearchResult(null); return;
-    }
+    if(!officeSearch.trim()){setOfficeSearchResult(null);return;}
     const q=officeSearch.toLowerCase().trim();
     const results=ecrData.filter(r=>
       (r.officeName||"").toLowerCase().includes(q)||
       (r.officeCode||"").toLowerCase().includes(q)
     );
-    // Deduplicate by officeCode — show latest month only
     const seen=new Set<string>();
     const deduped=results
       .sort((a,b)=>b.month.localeCompare(a.month))
@@ -441,14 +462,9 @@ export default function ReportsPage(){
   async function exportOfficeSearch(data:ECRRecord[]){
     const XLSX=await import("xlsx");
     const rows=data.map((r,i)=>({
-      Rank:i+1,
-      OfficeCode:r.officeCode,
-      OfficeName:r.officeName||r.officeCode,
-      Month:monthLabel(r.month),
-      "ECR%":r.ecr.toFixed(2),
-      Income:r.income,
-      Expenditure:r.expenditure,
-      "P&L":r.income-r.expenditure,
+      Rank:i+1,OfficeCode:r.officeCode,OfficeName:r.officeName||r.officeCode,
+      Month:monthLabel(r.month),"ECR%":r.ecr.toFixed(2),
+      Income:r.income,Expenditure:r.expenditure,"P&L":r.income-r.expenditure,
     }));
     const ws=XLSX.utils.json_to_sheet(rows);
     ws["!cols"]=Array(8).fill({wch:18});
@@ -479,14 +495,56 @@ export default function ReportsPage(){
     }).filter(Boolean) as {office:string;ecr1:number;ecr2:number}[];
   })();
 
+  // ── YoY data — multi-month ────────────────────────────────────
   const yoyData=(()=>{
-    const d1=ecrData.filter(r=>r.month===`${year1}-${yoyMonth}`);
-    const d2=ecrData.filter(r=>r.month===`${year2}-${yoyMonth}`);
-    return d1.map(r1=>{
-      const r2=d2.find(r=>r.officeCode===r1.officeCode);
-      return r2?{office:r1.officeName||r1.officeCode,ecr1:r1.ecr,ecr2:r2.ecr}:null;
-    }).filter(Boolean) as {office:string;ecr1:number;ecr2:number}[];
+    const rows:{office:string;ecr1:number;ecr2:number;monthCode:string}[]=[];
+    yoyMonths.forEach(mo=>{
+      const d1=ecrData.filter(r=>r.month===`${year1}-${mo}`);
+      const d2=ecrData.filter(r=>r.month===`${year2}-${mo}`);
+      d1.forEach(r1=>{
+        const r2=d2.find(r=>r.officeCode===r1.officeCode);
+        if(r2) rows.push({
+          office:r1.officeName||r1.officeCode,
+          ecr1:r1.ecr, ecr2:r2.ecr, monthCode:mo,
+        });
+      });
+    });
+    return rows;
   })();
+
+  // Group yoyData by month for grouped view
+  const yoyByMonth:(()=>Record<string,typeof yoyData>)=()=>{
+    const g:Record<string,typeof yoyData>={};
+    yoyData.forEach(d=>{
+      if(!g[d.monthCode]) g[d.monthCode]=[];
+      g[d.monthCode].push(d);
+    });
+    return g;
+  };
+
+  // YoY summary stats across all selected months
+  const yoyImproved=yoyData.filter(d=>d.ecr2>d.ecr1).length;
+  const yoyDeclined=yoyData.filter(d=>d.ecr2<d.ecr1).length;
+  const yoyNoChange=yoyData.filter(d=>d.ecr2===d.ecr1).length;
+
+  async function exportYoY(){
+    const XLSX=await import("xlsx");
+    const rows=yoyData.map((d,i)=>({
+      Rank:i+1,
+      Office:d.office,
+      Month:monthShort(d.monthCode),
+      [`ECR_${year1}`]:d.ecr1.toFixed(2),
+      [`ECR_${year2}`]:d.ecr2.toFixed(2),
+      Change:(d.ecr2-d.ecr1).toFixed(2),
+      Status:d.ecr2>d.ecr1?"Improved":d.ecr2<d.ecr1?"Declined":"No Change",
+    }));
+    const ws=XLSX.utils.json_to_sheet(rows);
+    ws["!cols"]=Array(7).fill({wch:18});
+    const wb=XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb,ws,"YoY Comparison");
+    XLSX.writeFile(wb,`ECR_YoY_${year1}_vs_${year2}.xlsx`);
+    showToast("✅ YoY exported!");
+  }
 
   const conData=ecrData.filter(r=>r.month===conMonth);
   const grouped:Record<string,ECRRecord[]>={};
@@ -596,11 +654,11 @@ export default function ReportsPage(){
 
   const allTabs=[
     {id:"myoffice" as TabType,label:"My Office",icon:"🏪",show:true},
-    {id:"monthly" as TabType,label:"Monthly",icon:"📅",show:isAdminLevel},
-    {id:"compare" as TabType,label:"Compare",icon:"⚖️",show:isAdminLevel},
-    {id:"yoy" as TabType,label:"YoY",icon:"📆",show:isAdminLevel},
+    {id:"monthly"  as TabType,label:"Monthly",  icon:"📅",show:isAdminLevel},
+    {id:"compare"  as TabType,label:"Compare",  icon:"⚖️",show:isAdminLevel},
+    {id:"yoy"      as TabType,label:"YoY",      icon:"📆",show:isAdminLevel},
     {id:"consolidated" as TabType,label:"Consolidated",icon:"🗂️",show:isAdminLevel},
-    {id:"filter" as TabType,label:"Filter",icon:"🔍",show:true},
+    {id:"filter"   as TabType,label:"Filter",   icon:"🔍",show:true},
   ].filter(t=>t.show);
 
   const paramLabel:Record<FilterParam,string>={
@@ -688,11 +746,11 @@ export default function ReportsPage(){
               <div style={{display:"flex",flexWrap:"wrap" as const,gap:6}}>
                 {([
                   {key:"ecr_desc" as SortKey,label:"ECR ↓ High"},
-                  {key:"ecr_asc" as SortKey,label:"ECR ↑ Low"},
-                  {key:"name_az" as SortKey,label:"Name A→Z"},
-                  {key:"name_za" as SortKey,label:"Name Z→A"},
+                  {key:"ecr_asc"  as SortKey,label:"ECR ↑ Low"},
+                  {key:"name_az"  as SortKey,label:"Name A→Z"},
+                  {key:"name_za"  as SortKey,label:"Name Z→A"},
                   {key:"income_desc" as SortKey,label:"Income ↓"},
-                  {key:"pl_desc" as SortKey,label:"P&L ↓"},
+                  {key:"pl_desc"  as SortKey,label:"P&L ↓"},
                 ]).map(s=>(
                   <button key={s.key} onClick={()=>setSortKey(s.key)} style={{
                     padding:"5px 10px",fontSize:11,fontWeight:600,
@@ -757,45 +815,187 @@ export default function ReportsPage(){
           </>
         )}
 
-        {/* YOY */}
+        {/* ── YOY — MULTI MONTH ── */}
         {activeTab==="yoy"&&!loading&&(
           <>
             <div style={fCard}>
-              <label style={lbl}>Month</label>
-              <select style={inp} value={yoyMonth} onChange={e=>setYoyMonth(e.target.value)}>
-                {Array.from({length:12},(_,i)=>{
-                  const m=String(i+1).padStart(2,"0");
-                  return <option key={m} value={m}>
-                    {new Date(2024,i).toLocaleString("default",{month:"long"})}
-                  </option>;
-                })}
-              </select>
-              <div style={{display:"flex",gap:10,marginTop:10}}>
+              {/* Year selectors */}
+              <div style={{display:"flex",gap:10,marginBottom:14}}>
                 <div style={{flex:1}}>
-                  <label style={lbl}>Year 1</label>
+                  <label style={lbl}>Year 1 (Base)</label>
                   <select style={inp} value={year1} onChange={e=>setYear1(e.target.value)}>
                     {[curYear-3,curYear-2,curYear-1,curYear].map(y=>
                       <option key={y} value={y}>{y}</option>)}
                   </select>
                 </div>
                 <div style={{flex:1}}>
-                  <label style={lbl}>Year 2</label>
+                  <label style={lbl}>Year 2 (Compare)</label>
                   <select style={inp} value={year2} onChange={e=>setYear2(e.target.value)}>
                     {[curYear-2,curYear-1,curYear,curYear+1].map(y=>
                       <option key={y} value={y}>{y}</option>)}
                   </select>
                 </div>
               </div>
+
+              {/* Month multi-select */}
+              <label style={lbl}>
+                Select Months
+                <span style={{fontSize:10,color:"#1565C0",fontWeight:700,
+                  marginLeft:6,background:"#EBF8FF",padding:"1px 8px",
+                  borderRadius:10}}>
+                  {yoyMonths.length} selected
+                </span>
+              </label>
+              <div style={{display:"flex",flexWrap:"wrap" as const,gap:6,marginBottom:10}}>
+                {Array.from({length:12},(_,i)=>{
+                  const m=String(i+1).padStart(2,"0");
+                  const sel=yoyMonths.includes(m);
+                  return(
+                    <button key={m} onClick={()=>toggleYoyMonth(m)} style={{
+                      padding:"6px 10px",fontSize:12,fontWeight:700,
+                      borderRadius:20,cursor:"pointer",border:"1px solid",
+                      minWidth:44,
+                      background:sel?"#1565C0":"#fff",
+                      color:sel?"#fff":"#718096",
+                      borderColor:sel?"#1565C0":"#E2E8F0",
+                    }}>
+                      {monthShort(m)}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Select All / Clear / Q buttons */}
+              <div style={{display:"flex",gap:6,marginBottom:10,
+                flexWrap:"wrap" as const}}>
+                <button onClick={()=>setYoyMonths(
+                  Array.from({length:12},(_,i)=>String(i+1).padStart(2,"0"))
+                )} style={smallBtn}>Select All</button>
+                <button onClick={()=>setYoyMonths(
+                  [String(new Date().getMonth()+1).padStart(2,"0")]
+                )} style={smallBtn}>Current Month</button>
+                <button onClick={()=>setYoyMonths(["04","05","06"])}
+                  style={smallBtn}>Q1 (Apr-Jun)</button>
+                <button onClick={()=>setYoyMonths(["07","08","09"])}
+                  style={smallBtn}>Q2 (Jul-Sep)</button>
+                <button onClick={()=>setYoyMonths(["10","11","12"])}
+                  style={smallBtn}>Q3 (Oct-Dec)</button>
+                <button onClick={()=>setYoyMonths(["01","02","03"])}
+                  style={smallBtn}>Q4 (Jan-Mar)</button>
+              </div>
+
+              {/* Group by month toggle */}
+              <div style={{display:"flex",justifyContent:"space-between",
+                alignItems:"center"}}>
+                <label style={{...lbl,marginBottom:0}}>Group results by month</label>
+                <button onClick={()=>setYoyGroupByMonth(v=>!v)} style={{
+                  padding:"5px 12px",fontSize:11,fontWeight:700,
+                  borderRadius:16,cursor:"pointer",border:"1px solid",
+                  background:yoyGroupByMonth?"#1565C0":"#fff",
+                  color:yoyGroupByMonth?"#fff":"#718096",
+                  borderColor:yoyGroupByMonth?"#1565C0":"#E2E8F0",
+                }}>
+                  {yoyGroupByMonth?"✓ Grouped":"Flat list"}
+                </button>
+              </div>
             </div>
-            {yoyData.length===0
-              ?<Empty icon="📆" title="No YoY data" msg="Data needed for both years."/>
-              :yoyData.map((d,i)=>(
-                <CompareRow key={i} office={d.office}
-                  ecr1={d.ecr1} ecr2={d.ecr2}
-                  month1={`${year1}-${yoyMonth}`}
-                  month2={`${year2}-${yoyMonth}`}/>
-              ))
-            }
+
+            {/* YoY summary stats */}
+            {yoyData.length>0&&(
+              <>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",
+                  gap:8,marginBottom:12}}>
+                  <div style={{background:"#DCFCE7",borderRadius:10,
+                    padding:"10px 12px",textAlign:"center" as const}}>
+                    <div style={{fontSize:10,color:"#15803D",fontWeight:700}}>IMPROVED</div>
+                    <div style={{fontSize:24,fontWeight:800,color:"#15803D"}}>
+                      {yoyImproved}
+                    </div>
+                    <div style={{fontSize:10,color:"#15803D"}}>offices</div>
+                  </div>
+                  <div style={{background:"#FEE2E2",borderRadius:10,
+                    padding:"10px 12px",textAlign:"center" as const}}>
+                    <div style={{fontSize:10,color:"#DC2626",fontWeight:700}}>DECLINED</div>
+                    <div style={{fontSize:24,fontWeight:800,color:"#DC2626"}}>
+                      {yoyDeclined}
+                    </div>
+                    <div style={{fontSize:10,color:"#DC2626"}}>offices</div>
+                  </div>
+                  <div style={{background:"#F1F5F9",borderRadius:10,
+                    padding:"10px 12px",textAlign:"center" as const}}>
+                    <div style={{fontSize:10,color:"#718096",fontWeight:700}}>NO CHANGE</div>
+                    <div style={{fontSize:24,fontWeight:800,color:"#718096"}}>
+                      {yoyNoChange}
+                    </div>
+                    <div style={{fontSize:10,color:"#718096"}}>offices</div>
+                  </div>
+                </div>
+
+                {/* Export */}
+                <button onClick={exportYoY} style={{...exportBtn,width:"100%",
+                  marginBottom:12,display:"block",textAlign:"center" as const}}>
+                  📥 Export YoY Report ({yoyData.length} rows)
+                </button>
+
+                {/* Results */}
+                {yoyGroupByMonth&&yoyMonths.length>1 ? (
+                  // Grouped by month
+                  Object.entries(yoyByMonth())
+                    .sort((a,b)=>a[0].localeCompare(b[0]))
+                    .map(([mo,rows])=>{
+                      const imp=rows.filter(d=>d.ecr2>d.ecr1).length;
+                      const dec=rows.filter(d=>d.ecr2<d.ecr1).length;
+                      return(
+                        <div key={mo} style={{marginBottom:16}}>
+                          {/* Month header */}
+                          <div style={{background:"#1565C0",borderRadius:10,
+                            padding:"10px 14px",marginBottom:8,
+                            display:"flex",justifyContent:"space-between",
+                            alignItems:"center"}}>
+                            <div style={{fontSize:14,fontWeight:700,color:"#fff"}}>
+                              📅 {monthShort(mo)} — {year1} vs {year2}
+                            </div>
+                            <div style={{display:"flex",gap:8}}>
+                              <span style={{fontSize:11,fontWeight:700,
+                                background:"#DCFCE7",color:"#15803D",
+                                padding:"2px 8px",borderRadius:10}}>
+                                ▲{imp}
+                              </span>
+                              <span style={{fontSize:11,fontWeight:700,
+                                background:"#FEE2E2",color:"#DC2626",
+                                padding:"2px 8px",borderRadius:10}}>
+                                ▼{dec}
+                              </span>
+                            </div>
+                          </div>
+                          {rows.sort((a,b)=>(b.ecr2-b.ecr1)-(a.ecr2-a.ecr1)).map((d,i)=>(
+                            <CompareRow key={i} office={d.office}
+                              ecr1={d.ecr1} ecr2={d.ecr2}
+                              month1={`${year1}-${mo}`}
+                              month2={`${year2}-${mo}`}/>
+                          ))}
+                        </div>
+                      );
+                    })
+                ) : (
+                  // Flat list — sorted by change desc
+                  yoyData
+                    .sort((a,b)=>(b.ecr2-b.ecr1)-(a.ecr2-a.ecr1))
+                    .map((d,i)=>(
+                      <CompareRow key={i} office={d.office}
+                        ecr1={d.ecr1} ecr2={d.ecr2}
+                        month1={`${year1}-${d.monthCode}`}
+                        month2={`${year2}-${d.monthCode}`}
+                        monthTag={yoyMonths.length>1?monthShort(d.monthCode):undefined}/>
+                    ))
+                )}
+              </>
+            )}
+
+            {yoyData.length===0&&(
+              <Empty icon="📆" title="No YoY data"
+                msg={`No matching data found for ${year1} vs ${year2} in selected months.`}/>
+            )}
           </>
         )}
 
@@ -811,7 +1011,8 @@ export default function ReportsPage(){
                 </div>
                 <div style={{flex:1}}>
                   <label style={lbl}>Group by</label>
-                  <select style={inp} value={groupBy} onChange={e=>setGroupBy(e.target.value as GroupBy)}>
+                  <select style={inp} value={groupBy}
+                    onChange={e=>setGroupBy(e.target.value as GroupBy)}>
                     <option value="circle">Circle</option>
                     <option value="division">Division</option>
                     <option value="subdivision">Sub Division</option>
@@ -844,12 +1045,10 @@ export default function ReportsPage(){
         {/* FILTER */}
         {activeTab==="filter"&&!loading&&(
           <>
-            {/* ── OFFICE SEARCH BOX ── */}
             <div style={fCard}>
               <div style={sHead}>🔍 Search Office by Name / ID</div>
               <div style={{display:"flex",gap:8,marginBottom:8}}>
-                <input
-                  style={{...inp,flex:1}}
+                <input style={{...inp,flex:1}}
                   placeholder="Type office name or office ID…"
                   value={officeSearch}
                   onChange={e=>{
@@ -862,9 +1061,7 @@ export default function ReportsPage(){
                   padding:"9px 16px",background:"#1565C0",color:"#fff",
                   border:"none",borderRadius:8,fontSize:13,
                   fontWeight:700,cursor:"pointer",whiteSpace:"nowrap" as const,
-                }}>
-                  Search
-                </button>
+                }}>Search</button>
               </div>
               {officeSearch&&(
                 <div style={{fontSize:11,color:"#A0AEC0"}}>
@@ -873,7 +1070,6 @@ export default function ReportsPage(){
               )}
             </div>
 
-            {/* Search results */}
             {officeSearchResult!==null&&(
               <div style={{marginBottom:12}}>
                 <div style={{display:"flex",justifyContent:"space-between",
@@ -887,8 +1083,7 @@ export default function ReportsPage(){
                   {officeSearchResult.length>0&&(
                     <button onClick={()=>exportOfficeSearch(officeSearchResult)}
                       style={{padding:"5px 12px",background:"#1565C0",color:"#fff",
-                        border:"none",borderRadius:6,fontSize:11,
-                        fontWeight:600,cursor:"pointer"}}>
+                        border:"none",borderRadius:6,fontSize:11,fontWeight:600,cursor:"pointer"}}>
                       📥 Export
                     </button>
                   )}
@@ -922,13 +1117,11 @@ export default function ReportsPage(){
                           </span>
                         </div>
                       </div>
-                      {/* Bar */}
                       <div style={{background:"#F1F5F9",borderRadius:6,
                         height:8,overflow:"hidden",marginBottom:8}}>
                         <div style={{width:`${Math.min(r.ecr||0,100)}%`,
                           height:"100%",background:ecrColor(r.ecr),borderRadius:6}}/>
                       </div>
-                      {/* Stats */}
                       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:6}}>
                         {[
                           {label:"INCOME",val:fmtR(r.income),bg:"#F0FFF4",color:"#15803D"},
@@ -951,7 +1144,6 @@ export default function ReportsPage(){
                           ⚠️ POSB accounts needed: {Math.ceil(shortfall/219.23).toLocaleString()}
                         </div>
                       )}
-                      {/* POSB/PLI/RPLI */}
                       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",
                         gap:6,marginTop:8}}>
                         {[
@@ -972,7 +1164,6 @@ export default function ReportsPage(){
               </div>
             )}
 
-            {/* Divider */}
             <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:12}}>
               <div style={{flex:1,height:1,background:"#E2E8F0"}}/>
               <div style={{fontSize:11,color:"#A0AEC0",fontWeight:600,whiteSpace:"nowrap" as const}}>
@@ -981,7 +1172,6 @@ export default function ReportsPage(){
               <div style={{flex:1,height:1,background:"#E2E8F0"}}/>
             </div>
 
-            {/* Parameter filter */}
             <div style={fCard}>
               <div style={sHead}>Filter by Parameter</div>
               <label style={lbl}>Month</label>
@@ -1043,7 +1233,6 @@ export default function ReportsPage(){
               </button>
             </div>
 
-            {/* Filter results */}
             {filterResult!==null&&(
               <>
                 <div style={{display:"flex",justifyContent:"space-between",
@@ -1052,9 +1241,7 @@ export default function ReportsPage(){
                     {filterResult.length} offices found
                   </div>
                   {filterResult.length>0&&(
-                    <button onClick={exportFilterResult} style={exportBtn}>
-                      📥 Download
-                    </button>
+                    <button onClick={exportFilterResult} style={exportBtn}>📥 Download</button>
                   )}
                 </div>
                 {filterResult.length===0
@@ -1062,7 +1249,6 @@ export default function ReportsPage(){
                   :(
                     <div style={{background:"#fff",borderRadius:12,
                       border:"1px solid #E2E8F0",overflow:"hidden",marginBottom:12}}>
-                      {/* Header */}
                       <div style={{display:"grid",gridTemplateColumns:"auto 1fr auto auto auto",
                         padding:"10px 14px",background:"#F7FAFC",
                         borderBottom:"1px solid #E2E8F0"}}>
@@ -1071,7 +1257,6 @@ export default function ReportsPage(){
                             textTransform:"uppercase" as const}}>{h}</div>
                         ))}
                       </div>
-                      {/* Rows */}
                       {filterResult.map((r,i)=>{
                         const pl=r.income-r.expenditure;
                         return(
@@ -1109,7 +1294,6 @@ export default function ReportsPage(){
                           </div>
                         );
                       })}
-                      {/* Footer */}
                       <div style={{display:"grid",gridTemplateColumns:"auto 1fr auto auto auto",
                         padding:"10px 14px",background:"#EBF8FF",
                         borderTop:"2px solid #BEE3F8"}}>
@@ -1177,4 +1361,9 @@ const exportBtn:React.CSSProperties={
   padding:"9px 14px",background:"#1565C0",color:"#fff",
   border:"none",borderRadius:8,fontSize:13,
   fontWeight:600,cursor:"pointer",whiteSpace:"nowrap" as const,
+};
+const smallBtn:React.CSSProperties={
+  padding:"5px 10px",fontSize:11,fontWeight:600,
+  borderRadius:16,cursor:"pointer",border:"1px solid #E2E8F0",
+  background:"#F7FAFC",color:"#4A5568",whiteSpace:"nowrap" as const,
 };
